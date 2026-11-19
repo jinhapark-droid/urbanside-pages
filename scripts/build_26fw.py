@@ -22,6 +22,7 @@ Google Drive 원본 → 집계 → 비밀번호 암호화 → 26fw-sellthrough/d
 GitHub Actions에서는 변경 여부를 $GITHUB_OUTPUT 의 changed/as_of 로 알려준다.
 """
 import base64, collections, datetime as dt, hashlib, io, json, os, re, sys, warnings
+from html.parser import HTMLParser
 
 import openpyxl
 from cryptography.hazmat.primitives import hashes
@@ -41,7 +42,7 @@ SRC = {
 }
 INV_TAB = '일자 별 재고조회 (당시재고)'
 JPY_KRW = 9  # 오모테산도 엔화 판매 환산 (¥1=9원, 라인시트 기준)
-SEASON_START = dt.date(2026, 7, 1)
+SEASON_START = dt.date(2026, 8, 1)  # 허브와 같은 기준 (7월 선런칭분은 허브에도 없음)
 MONTHS = ['8월', '9월', '10월', '11월', '12월', '1월', '2월']
 MONTH_START = [dt.date(2026, 8, 1), dt.date(2026, 9, 1), dt.date(2026, 10, 1), dt.date(2026, 11, 1),
                dt.date(2026, 12, 1), dt.date(2027, 1, 1), dt.date(2027, 2, 1), dt.date(2027, 3, 1)]
@@ -73,8 +74,15 @@ CHANNELS = {
                  qty='수량', status='판매/환불', key=('ID', '상품코드'), sku='상품코드', opt='옵션'),
 }
 EXCLUDE = ('취소', '반품', '환불', '입금전', '수거')
+MUSINSA = dict(folder='1fx0hwqs_6lpVLn5DUu_jYLZQ3SWlZYPg', prefix='매출_국내_무신사_어패럴_')
+# CM2 기본값 — 허브 01_입력값에서 읽어 덮어쓴다 (29CM·아난티는 허브에 없어 고정 가정)
+FEE_DEFAULT = {'자사몰': 0.035, '무신사': 0.275, '4910': 0.15, '일본': 0.224, '이지체인': 0.30, '29CM': 0.30,
+               '팝업 아난티 코브': 0.30, '팝업 더현대 충청': 0.30, '팝업 더현대 오모테산도': 0.60}
+SHIP_KR, SHIP_JP, RESERVE = 6330, 20000, 0.03
+DOMESTIC = {'자사몰', '무신사', '4910', '29CM', '이지체인', '팝업 아난티 코브', '팝업 더현대 충청'}
+ONLINE_KR = {'자사몰', '무신사', '4910', '29CM'}
 BACKUP = ('_자동백업_', '_백업_', '_bak_', '수동백업', '자동백업')
-PERIOD = re.compile(r'(\d{6,8})_(\d{6,8})\.xlsx$')
+PERIOD = re.compile(r'(\d{6,8})_(\d{6,8})\.xlsx?$')
 SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'OS']
 SIZE_RE = re.compile(r'(?<![A-Z])(XXL|2XL|XL|XS|OS|FREE|S|M|L)(?![A-Z])')
 NO_COLOR, NO_SIZE = '기타(컬러 미기재)', '(사이즈 미기재)'
@@ -264,7 +272,36 @@ def read_hub(buf, today):
                 for m in MONTHS:
                     if m in ch:
                         cancels.append({'channel': name, 'month': m, 'amount': num(r[ch.index(m)])})
-    return kpi, monthly, hub_products, refreshed, cancels
+    # 정가·원가(세전): 04_월별계산기 상세 계산표 (제품명 | ... | KR판매가 | 원가(세전))
+    unit = {}
+    if '04_월별계산기_및_매출집계' in wb.sheetnames:
+        hdr = None
+        for r in wb['04_월별계산기_및_매출집계'].iter_rows(values_only=True):
+            cells = [str(v).strip() if v is not None else '' for v in r]
+            if cells and cells[0] == '제품명' and 'KR판매가' in cells and '원가(세전)' in cells:
+                hdr = cells
+                continue
+            if hdr and cells and cells[0]:
+                canon, _ = match(cells[0])
+                if canon and canon not in unit:
+                    unit[canon] = {'tag': num(r[hdr.index('KR판매가')]), 'cost': num(r[hdr.index('원가(세전)')])}
+    for h in hub_products:
+        h.update(unit.get(h['name'], {'tag': 0, 'cost': 0}))
+
+    # 채널수수료·운송비: 01_입력값
+    fees, ship = dict(FEE_DEFAULT), SHIP_KR
+    if '01_입력값' in wb.sheetnames:
+        alias = {'자사몰': ['자사몰'], '무신사': ['무신사'], '4910': ['4910'], '일본몰': ['일본'],
+                 '현대백화점': ['이지체인', '팝업 더현대 충청'], '일본 팝업': ['팝업 더현대 오모테산도']}
+        for r in wb['01_입력값'].iter_rows(values_only=True):
+            a = str(r[0] or '').strip()
+            if a == '국내운송비' and num(r[1]):
+                ship = num(r[1])
+            for k, targets in alias.items():
+                if a.startswith(k) and len(r) > 3 and isinstance(r[3], (int, float)) and 0 < r[3] < 1:
+                    for t in targets:
+                        fees[t] = float(r[3])
+    return kpi, monthly, hub_products, refreshed, cancels, fees, ship
 
 
 # ───────────────────────── 창고 재고 ─────────────────────────
@@ -293,6 +330,7 @@ def read_inventory(buf):
     if (col_dt.hour, col_dt.minute) != (17, 0):
         raise ValidationError(f'창고 재고 날짜 컬럼 시각이 17:00이 아님: {col_dt}')
     by_size = collections.Counter()
+    pending = collections.Counter()  # '접수' = 결제됐지만 아직 출고 안 된 수량 (판매에도 잡혀 있음)
     sku = {}  # 코드 → (품목, 컬러, 사이즈)
     colors = collections.defaultdict(set)
     for r in it:
@@ -313,12 +351,18 @@ def read_inventory(buf):
             size = norm_size(m.group(1)) if m else NO_SIZE
         key = (canon, color, size)
         by_size[key] += int(num(r[last]))
+        if '접수' in ix:
+            pending[key] += int(num(r[ix['접수']]))
         colors[canon].add(color)
         for code in (r[ix['공급처옵션']], r[ix['상품코드']], r[ix.get('바코드', ix['상품코드'])]):
             c = norm_code(code)
             if c:
                 sku[c] = key
-    return by_size, sku, colors, col_dt
+    sizes = collections.defaultdict(set)
+    for (p, _, z) in by_size:
+        sizes[p].add(z)
+    one_size = {p for p, zs in sizes.items() if zs == {'OS'}}
+    return by_size, pending, sku, colors, one_size, col_dt
 
 
 # ───────────────────────── 팝업 ─────────────────────────
@@ -333,6 +377,7 @@ def norm_color(raw, known):
     if not s:
         return NO_COLOR
     s = EN_COLOR.get(nospace(s).upper(), s)
+    s = s.replace('챠콜', '차콜')
     for k in known:
         if nospace(k) == nospace(s):
             return k
@@ -357,7 +402,8 @@ def read_popup(buf, colors):
         q = int(num(d.get('잔여재고')))
         stock[(canon, norm_color(d.get('컬러'), colors[canon]), norm_size(d.get('사이즈')) or NO_SIZE)] += q
         by_store[str(d['지점'])] += q
-    sold_q, sold_rev, sold_cs = collections.Counter(), collections.Counter(), collections.Counter()
+    sold_q, sold_rev = collections.Counter(), collections.Counter()
+    recs = []  # 판매 기록 (주문 원본과 같은 형태로 합친다)
     for d in rows_of(wb['원장']):
         kind = str(d.get('구분') or '')
         if not any(k in kind for k in ('판매', '반품', '환불')):
@@ -367,13 +413,18 @@ def read_popup(buf, colors):
             continue
         q = -int(num(d.get('수량(±)')))  # 판매는 음수로 기록됨
         amt = abs(num(d.get('판매금액')))
-        if '오모테산도' in str(d.get('지점')):
+        store = str(d.get('지점') or '').strip()
+        if '오모테산도' in store:
             amt *= JPY_KRW
         sign = 1 if q >= 0 else -1
         sold_q[canon] += q
         sold_rev[canon] += sign * amt
-        sold_cs[(canon, norm_color(d.get('컬러'), colors[canon]), norm_size(d.get('사이즈')) or NO_SIZE)] += q
-    return stock, by_store, sold_q, sold_rev, sold_cs, stamp
+        day = d.get('일자')
+        day = day.date() if isinstance(day, dt.datetime) else None
+        if day:
+            recs.append({'ch': f'팝업 {store}', 'day': day, 'qty': q, 'paid': sign * amt,
+                         'key': (canon, norm_color(d.get('컬러'), colors[canon]), norm_size(d.get('사이즈')) or NO_SIZE)})
+    return stock, by_store, sold_q, sold_rev, recs, stamp
 
 
 # ───────────────────────── 주문 원본 ─────────────────────────
@@ -451,25 +502,188 @@ def parse_cs(ch, d, canon, pat, sku, colors):
     return canon, color or NO_COLOR, size
 
 
-def read_orders(drv, sku, colors, today):
-    daily = collections.defaultdict(collections.Counter)
-    by_ch_day = collections.defaultdict(collections.Counter)
-    cs = collections.Counter()
+# 주문 상태 분류 (판매로 세지 않는 행 중 재고·비용에 영향을 주는 것)
+RET_OPEN = ('반품신청', '반품처리중', '반품접수', '반품 접수', '반품진행', '반품 진행', '반품요청', '반품 요청', '수거중', '수거 중', '수거완료')
+RET_DONE = ('반품완료', '반품 완료')
+
+
+def classify(status):
+    """→ 'sale' | 'exchange' | 'return_open' | 'return_done' | 'skip'"""
+    s = str(status or '')
+    if any(k in s for k in RET_OPEN):
+        return 'return_open'
+    if any(k in s for k in RET_DONE):
+        return 'return_done'
+    if any(k in s for k in EXCLUDE):
+        return 'skip'
+    if '교환' in s:
+        return 'exchange'
+    return 'sale'
+
+
+def to_date(v):
+    if v in (None, ''):
+        return None
+    if isinstance(v, dt.datetime):
+        return v.date()
+    s = str(v).strip()
+    if re.fullmatch(r'\d{8}', s):
+        return dt.date(int(s[:4]), int(s[4:6]), int(s[6:]))
+    try:
+        return dt.date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def cafe24_paid(rows, jpy):
+    """카페24(자사몰·일본몰): 쿠폰·적립금·할인코드는 주문의 첫 줄에만 적혀 있어 주문 안 상품들에 금액 비율로 나눈다."""
+    amt_col = '상품구매금액(JPY)' if jpy else '상품구매금액'
+    disc_cols = (('쿠폰 할인금액(JPY)', '사용한 적립금액(JPY)', '할인코드 할인금액') if jpy
+                 else ('쿠폰 할인금액(최종)', '사용한 적립금액(최종)', '할인코드 할인금액'))
+    item_disc = '상품별 추가할인금액(JPY)' if jpy else '상품별 추가할인금액'
+    gross, disc = collections.Counter(), collections.Counter()
+    for d in rows:
+        o = str(d.get('주문번호'))
+        gross[o] += num(d.get(amt_col))
+        disc[o] += sum(num(d.get(k)) for k in disc_cols)
+    out = []
+    for d in rows:
+        o = str(d.get('주문번호'))
+        g = num(d.get(amt_col))
+        share = disc[o] * g / gross[o] if gross[o] else 0
+        paid = max(0.0, g - share - num(d.get(item_disc)))
+        out.append(paid * (JPY_KRW if jpy else 1))
+    return out
+
+
+class HtmlTable(HTMLParser):
+    """무신사 정산 파일(.xls 확장자지만 실제로는 HTML 표)."""
+    def __init__(self):
+        super().__init__()
+        self.rows, self.cur, self.cell = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'tr':
+            self.cur = []
+        elif tag in ('td', 'th') and self.cur is not None:
+            self.cell = ''
+
+    def handle_endtag(self, tag):
+        if tag in ('td', 'th') and self.cell is not None:
+            self.cur.append(self.cell.strip())
+            self.cell = None
+        elif tag == 'tr' and self.cur is not None:
+            self.rows.append(self.cur)
+            self.cur = None
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell += data
+
+
+def read_musinsa(drv, colors, one_size, add, used):
+    seen = set()
+    for f in pick_files(drv.list_folder(MUSINSA['folder']), MUSINSA['prefix']):
+        raw = drv.get(f).getvalue()
+        txt = None
+        for enc in ('utf-8', 'cp949', 'euc-kr'):
+            try:
+                txt = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if txt is None:
+            raise ValidationError(f'무신사 파일 인코딩을 읽지 못함: {f["name"]}')
+        t = HtmlTable()
+        t.feed(txt)
+        if not t.rows:
+            continue
+        used.append({'channel': '무신사', 'file': f['name'], 'modified_kst': kst(f['modifiedTime']), 'start': f['start'].isoformat(),
+                     'end': f['end'].isoformat()})
+        hdr = t.rows[0]
+        ix = {}
+        for i, h in enumerate(hdr):
+            ix.setdefault(h, i)          # 같은 이름(과세·소계)은 첫 번째 열
+        i_settle = max(i for i, h in enumerate(hdr) if h == '정산금액')
+
+        def g(r, k):
+            return r[ix[k]] if k in ix and ix[k] < len(r) else ''
+
+        for r in t.rows[1:]:
+            if len(r) < len(hdr) - 2 or not g(r, '상품'):
+                continue
+            kind_txt, claim = g(r, '구분'), g(r, '클레임상태')
+            if not kind_txt.startswith('판매'):
+                continue
+            key = g(r, '주문일련번호')
+            if key in seen:
+                continue
+            seen.add(key)
+            name = g(r, '상품')
+            canon, _ = match(name)
+            if not canon or other_season(name, g(r, '스타일넘버')):
+                continue
+            day = to_date(g(r, '일자'))
+            if not day:
+                continue
+            opt = re.split(r'\s*[:^]\s*', g(r, '옵션'))
+            color = norm_color(opt[0] if opt else '', colors[canon])
+            size = 'OS' if canon in one_size else (norm_size(opt[1]) if len(opt) > 1 else '') or NO_SIZE
+            sku_key = (canon, color, size)
+            q = int(num(g(r, '수량'))) or 1
+            if '환불' in kind_txt or '환불' in claim:
+                if '요청' in claim:
+                    add('무신사', day, sku_key, q, 'return_open')
+                elif '출고전' not in kind_txt:
+                    add('무신사', day, sku_key, q, 'return_done')
+                continue
+            paid = (num(g(r, '판매금액')) - num(g(r, '할인금액')) - num(g(r, '소계')) - num(g(r, '적립금'))
+                    - num(g(r, '장바구니할인')) - num(g(r, '그룹할인')) - num(g(r, '추가할인')))
+            settle = num(r[i_settle]) if i_settle < len(r) else 0
+            kind = 'exchange' if '교환' in kind_txt or '교환' in claim else 'sale'
+            # 무신사는 정산금액이 있어 실제 수수료(쿠폰 부담분 포함) = 실결제 − 정산
+            add('무신사', day, sku_key, q, kind, paid=paid, fee=max(0.0, paid - settle) / 1.1)
+
+
+def read_orders(drv, sku, colors, one_size, popup_recs, fees):
+    """주문 원본(5개 채널 + 무신사) + 팝업 판매를 행 단위 기록으로 모은다."""
+    recs = []           # 판매·교환: dict(ch, day, key, qty, paid, fee)
+    events = collections.defaultdict(collections.Counter)   # 'exchange'|'return_open'|'return_done' → (품목,컬러,사이즈) → 수량
     used = []
+
+    def add(ch, day, key, q, kind, paid=0.0, fee=None):
+        if day < SEASON_START:
+            return
+        if kind in ('sale', 'exchange'):
+            recs.append({'ch': ch, 'day': day, 'key': key, 'qty': q, 'paid': paid,
+                         'fee': fee if fee is not None else paid / 1.1 * fees.get(ch, 0.0)})
+        if kind != 'sale':
+            events[kind][key] += q
+
     for ch, c in CHANNELS.items():
         seen = set()
         for f in pick_files(drv.list_folder(c['folder']), c['prefix']):
             wb = openpyxl.load_workbook(drv.get(f), read_only=True, data_only=True)
             used.append({'channel': ch, 'file': f['name'], 'modified_kst': kst(f['modifiedTime']), 'start': f['start'].isoformat(),
                          'end': f['end'].isoformat()})
-            for d in rows_of(wb.worksheets[0]):
-                day = d.get(c['date'])
-                if day in (None, ''):
+            rows = list(rows_of(wb.worksheets[0]))
+            fee_base = None
+            if ch in ('자사몰', '일본'):
+                paids = cafe24_paid(rows, jpy=(ch == '일본'))
+            elif ch == '4910':
+                paids = [num(d.get('결제액')) for d in rows]
+                # 4910 플랫폼 부담 쿠폰·적립금은 우리 정산에 들어오므로 수수료 기준에 더한다
+                fee_base = [num(d.get('결제액')) + num(d.get('쿠폰지원금')) + num(d.get('적립금지원금')) + num(d.get('결제수단지원금'))
+                            for d in rows]
+            elif ch == '29CM':
+                paids = [num(d.get('실 판매액')) for d in rows]
+            else:  # 이지체인
+                paids = [num(d.get('실판매금액')) for d in rows]
+            for i, d in enumerate(rows):
+                day = to_date(d.get(c['date']))
+                if not day:
                     continue
-                day = day.date() if isinstance(day, dt.datetime) else dt.date.fromisoformat(str(day)[:10])
                 if c.get('code') and str(d.get(c['code']) or '') == 'N2':  # 카페24 교환 재발송(원주문과 중복)
-                    continue
-                if any(x in str(d.get(c['status']) or '') for x in EXCLUDE):
                     continue
                 key = tuple(str(d.get(k)) for k in c['key'])
                 if key in seen:  # 주문번호+품목코드 중복 제거 (겹치는 기간 파일 포함)
@@ -478,25 +692,19 @@ def read_orders(drv, sku, colors, today):
                 canon, pat = match(d.get(c['name']))
                 if not canon or other_season(d.get(c['name']), d.get(c.get('sku', ''))):
                     continue
+                kind = classify(d.get(c['status']))
+                if kind == 'skip':
+                    continue
                 q = int(num(d.get(c['qty'])))
-                daily[day][canon] += q
-                by_ch_day[day][ch] += q
-                if day >= SEASON_START:
-                    cs[parse_cs(ch, d, canon, pat, sku, colors)] += q
-    days = [d for d in daily if d <= today]
-    if not days:
+                fee = fee_base[i] / 1.1 * fees.get(ch, 0.0) if fee_base else None
+                add(ch, day, parse_cs(ch, d, canon, pat, sku, colors), q, kind, paid=paids[i], fee=fee)
+    read_musinsa(drv, colors, one_size, add, used)
+    for r in popup_recs:
+        add(r['ch'], r['day'], r['key'], r['qty'], 'sale', paid=r['paid'])
+    if not recs:
         raise ValidationError('주문 원본에서 26FW 판매 행을 찾지 못함')
-    D = max(days)
-    win = [D - dt.timedelta(days=i) for i in (2, 1, 0)]
-    tot, chs = collections.Counter(), collections.Counter()
-    for d in win:
-        tot.update(daily.get(d, {}))
-        chs.update(by_ch_day.get(d, {}))
-    recent = [{'name': n, 'recent3d_qty': int(tot.get(n, 0))} for n in NAMES]
-    rmeta = {'start': win[0].isoformat(), 'end': D.isoformat(), 'total': sum(tot.values()), 'by_channel': dict(chs),
-             'files': [u for u in used if u['end'] >= win[0].isoformat()]}
     sig = hashlib.sha256(json.dumps(sorted((u['file'], u['modified_kst']) for u in used), ensure_ascii=False).encode()).hexdigest()[:16]
-    return recent, rmeta, cs, used, sig
+    return recs, events, used, sig
 
 
 # ───────────────────────── 암호화 ─────────────────────────
@@ -541,6 +749,9 @@ def validate(new, prev, notes):
     for n, r in inv.items():
         if sz_w[n] != r['available_qty'] or sz_p[n] != r['popup_available_qty']:
             errs.append(f'{n}: 사이즈별 합계({sz_w[n]}/{sz_p[n]})가 품목 재고({r["available_qty"]}/{r["popup_available_qty"]})와 다름')
+    for r in new['inventory']:
+        if r['real_qty'] != r['available_qty'] - r['pending_qty'] + r['returning_qty'] + r['popup_available_qty']:
+            errs.append(f"{r['name']}: 실재고 계산 불일치")
     wh = sum(r['available_qty'] for r in new['inventory'])
     pop = sum(r['popup_available_qty'] for r in new['inventory'])
     sold = sum(p['sold_qty'] for p in new['products'])
@@ -549,8 +760,11 @@ def validate(new, prev, notes):
         p_wh = sum(r['available_qty'] for r in prev['inventory'])
         p_pop = sum(r['popup_available_qty'] for r in prev['inventory'])
         p_sold = sum(p['sold_qty'] for p in prev['products'])
-        if sold < p_sold:
+        # 취소가 사후 반영되면 누적이 조금 줄 수 있다 — 20개 또는 1% 넘게 줄 때만 이상으로 본다
+        if p_sold - sold > max(20, p_sold * 0.01):
             errs.append(f'누적 판매수량 감소 {p_sold:,} → {sold:,}')
+        elif sold < p_sold:
+            notes.append(f'누적 판매수량 소폭 감소 {p_sold:,} → {sold:,} (취소 반영으로 보고 허용)')
         if p_sold and abs(sold - p_sold) / p_sold > 0.3:
             errs.append(f'누적 판매수량 ±30% 초과 변동 {p_sold:,} → {sold:,}')
         if p_wh and abs(wh - p_wh) / p_wh > 0.3:
@@ -577,53 +791,128 @@ def main():
             raise ValidationError(f'{k} 원본이 백업 파일임: {m["name"]}')
         log(f'· {k}: {m["name"]} ({kst(m["modifiedTime"])})')
 
-    kpi, monthly, hub_products, hub_refreshed, cancels = read_hub(drv.get(metas['hub']), today)
-    wh_size, sku, colors, wh_col = read_inventory(drv.get(metas['inventory']))
-    pop_stock, pop_store, pop_q, pop_rev, pop_cs, pop_stamp = read_popup(drv.get(metas['popup']), colors)
-    recent, rmeta, ord_cs, used, sig = read_orders(drv, sku, colors, today)
+    kpi, monthly, hub_products, hub_refreshed, cancels, fees, ship_kr = read_hub(drv.get(metas['hub']), today)
+    wh_size, pending, sku, colors, one_size, wh_col = read_inventory(drv.get(metas['inventory']))
+    pop_stock, pop_store, pop_q, pop_rev, pop_recs, pop_stamp = read_popup(drv.get(metas['popup']), colors)
+    recs, events, used, sig = read_orders(drv, sku, colors, one_size, pop_recs, fees)
 
-    products = []
+    # ── 판매 기록에서 파생 ──
+    online = [r for r in recs if not r['ch'].startswith('팝업')]
+    D = max(r['day'] for r in online if r['day'] <= today)
+    win3 = {D - dt.timedelta(days=i) for i in range(3)}
+    win14 = {D - dt.timedelta(days=i) for i in range(14)}
+    cs, cs14, r3, r3ch = (collections.Counter() for _ in range(4))
+    mix = collections.Counter()
+    agg = collections.defaultdict(lambda: collections.Counter())   # 품목 → 금액·수량 합계
+    weekly = collections.defaultdict(lambda: collections.Counter())  # (품목, 주 시작일) → paid, qty
+    for r in recs:
+        n, q = r['key'][0], r['qty']
+        cs[r['key']] += q
+        if r['day'] in win14:
+            cs14[r['key']] += q
+        if r['day'] in win3 and not r['ch'].startswith('팝업'):
+            r3[n] += q
+            r3ch[r['ch']] += q
+        mix[(n, '팝업' if r['ch'].startswith('팝업') else r['ch'])] += q
+        a = agg[n]
+        a['qty'] += q
+        a['net'] += r['paid'] / 1.1
+        a['fee'] += r['fee']
+        a['ship'] += q * (ship_kr if r['ch'] in ONLINE_KR else SHIP_JP if r['ch'] == '일본' else 0)
+        if r['ch'] in DOMESTIC:   # 객단가·할인율·가격 추이는 원화 정가와 비교 가능한 국내 판매만
+            a['dom_qty'] += q
+            a['dom_paid'] += r['paid']
+            wk = r['day'] - dt.timedelta(days=r['day'].weekday())
+            weekly[(n, wk)]['paid'] += r['paid']
+            weekly[(n, wk)]['qty'] += q
+    ret_cost = collections.Counter()
+    for kind in ('return_done', 'exchange'):
+        for k, q in events[kind].items():
+            ret_cost[k[0]] += q * 2 * ship_kr   # 반품·교환 왕복 운송비
+
+    products, tot = [], collections.Counter()
     for h in hub_products:
         n = h['name']
         q = h['hub_qty'] + pop_q.get(n, 0)
+        a = agg[n]
+        cogs = a['qty'] * h['cost']
+        reserve = a['net'] * RESERVE
+        cm2 = a['net'] - a['fee'] - cogs - a['ship'] - reserve - ret_cost[n]
+        avg_price = a['dom_paid'] / a['dom_qty'] if a['dom_qty'] else 0
+        for k, v in (('net', a['net']), ('cm2', cm2), ('dom_paid', a['dom_paid']), ('dom_tag', a['dom_qty'] * h['tag'])):
+            tot[k] += v
         products.append({'name': n, 'hero': h['hero'], 'moq': h['moq'], 'sold_qty': q, 'sold_rev': round(h['hub_rev'] + pop_rev.get(n, 0), 1),
                          'sell_through': round(q / h['moq'], 4) if h['moq'] else 0,
-                         'popup_sold_qty': pop_q.get(n, 0), 'popup_sold_rev': round(pop_rev.get(n, 0), 1)})
+                         'popup_sold_qty': pop_q.get(n, 0), 'popup_sold_rev': round(pop_rev.get(n, 0), 1),
+                         'order_qty': int(a['qty']), 'tag_price': h['tag'], 'avg_price': round(avg_price),
+                         'discount_rate': round(1 - avg_price / h['tag'], 4) if h['tag'] and avg_price else None,
+                         'cm2': round(cm2), 'cm2_rate': round(cm2 / a['net'], 4) if a['net'] else None})
+    price_kpi = {'discount_rate': round(1 - tot['dom_paid'] / tot['dom_tag'], 4) if tot['dom_tag'] else None,
+                 'cm2': round(tot['cm2']), 'net_rev': round(tot['net']),
+                 'cm2_rate': round(tot['cm2'] / tot['net'], 4) if tot['net'] else None,
+                 'assumptions': {'fees': fees, 'ship_kr': ship_kr, 'ship_jp': SHIP_JP, 'reserve': RESERVE}}
 
+    # ── 재고: 창고·팝업은 따로, 실재고 = 창고 − 출고대기 + 회수중 반품 + 팝업 ──
     as_of_date = wh_col.date().isoformat()
-    inventory, by_size = [], []
+    returning = events['return_open']
+    keys = sorted(set(wh_size) | set(pop_stock) | set(pending) | set(returning))
+    by_size = []
+    for k in keys:
+        w, p, pe, rt = wh_size.get(k, 0), pop_stock.get(k, 0), pending.get(k, 0), returning.get(k, 0)
+        # 출고대기는 창고에 있는 만큼만 뺀다. 넘치는 수량은 재고 없이 받은 주문(미출고)
+        by_size.append({'product': k[0], 'color': k[1], 'size': k[2], 'available_qty': w, 'popup_qty': p,
+                        'pending_qty': min(pe, max(w, 0)), 'backorder_qty': max(0, pe - max(w, 0)), 'returning_qty': rt,
+                        'real_qty': max(0, w - pe) + rt + p})
+    inventory = []
     for n in NAMES:
-        inventory.append({'name': n, 'available_qty': sum(v for k, v in wh_size.items() if k[0] == n),
-                          'popup_available_qty': sum(v for k, v in pop_stock.items() if k[0] == n), 'as_of_date': as_of_date})
-    for key in sorted(set(wh_size) | set(pop_stock)):
-        by_size.append({'product': key[0], 'color': key[1], 'size': key[2],
-                        'available_qty': wh_size.get(key, 0), 'popup_qty': pop_stock.get(key, 0)})
+        rows = [r for r in by_size if r['product'] == n]
+        inventory.append({'name': n, 'as_of_date': as_of_date,
+                          **{f: sum(r[s] for r in rows) for f, s in (('available_qty', 'available_qty'), ('popup_available_qty', 'popup_qty'),
+                                                                   ('pending_qty', 'pending_qty'), ('backorder_qty', 'backorder_qty'),
+                                                                   ('returning_qty', 'returning_qty'),
+                                                                   ('real_qty', 'real_qty'))}})
 
-    cs = ord_cs + pop_cs
-    color_size = [{'product': k[0], 'color': k[1], 'size': k[2], 'qty': v} for k, v in sorted(cs.items()) if v]
+    color_size = [{'product': k[0], 'color': k[1], 'size': k[2], 'qty': v, 'qty14': cs14.get(k, 0)} for k, v in sorted(cs.items()) if v]
+    recent = [{'name': n, 'recent3d_qty': int(r3.get(n, 0))} for n in NAMES]
+    price_weekly = [{'name': n, 'week': wk.isoformat(), 'qty': int(v['qty']), 'avg_price': round(v['paid'] / v['qty'])}
+                    for (n, wk), v in sorted(weekly.items()) if v['qty'] > 0]
+    channel_mix = [{'name': n, 'channel': ch, 'qty': q} for (n, ch), q in sorted(mix.items()) if q]
 
+    # ── 데이터 신선도 ──
+    stale = []
+    if (today - wh_col.date()).days > 2:
+        stale.append(f'창고 재고가 {wh_col:%m/%d} 기준이에요')
+    hub_mod = dt.datetime.fromisoformat(metas['hub']['modifiedTime'].replace('Z', '+00:00')).astimezone(KST).date()
+    if (today - hub_mod).days > 2:
+        stale.append(f'재무모델 허브가 {hub_mod:%m/%d} 이후 갱신되지 않았어요')
+    if (today - D).days > 3:
+        stale.append(f'주문 원본이 {D:%m/%d} 결제분까지만 올라와 있어요')
+
+    files3 = [u for u in used if u['end'] >= min(win3).isoformat()]
     meta = {
         'built_at_kst': now.strftime('%Y-%m-%d %H:%M'),
         'sources': [
-            {'label': '재무모델 허브 (시즌 KPI·월별·품목 판매)', 'file': metas['hub']['name'], 'modified_kst': kst(metas['hub']['modifiedTime']),
+            {'label': '재무모델 허브 (시즌 KPI·월별·품목 판매·정가·원가)', 'file': metas['hub']['name'], 'modified_kst': kst(metas['hub']['modifiedTime']),
              'note': hub_refreshed.strip('()')},
             {'label': '창고 재고 (재고관리시트)', 'file': metas['inventory']['name'], 'modified_kst': kst(metas['inventory']['modifiedTime']),
-             'note': f"{INV_TAB} · {wh_col.strftime('%Y-%m-%d %H:%M')} 컬럼"},
+             'note': f"{INV_TAB} · {wh_col.strftime('%Y-%m-%d %H:%M')} 컬럼 · 출고대기 = '접수' 열"},
             {'label': '팝업 재고·판매', 'file': metas['popup']['name'], 'modified_kst': kst(metas['popup']['modifiedTime']),
              'note': f"마지막 집계 {pop_stamp} · " + ' / '.join(f'{k} {v}' for k, v in pop_store.items())},
-            {'label': '최근 3일 판매 (주문 원본)', 'file': ', '.join(f['file'] for f in rmeta['files']),
-             'modified_kst': max((f['modified_kst'] for f in rmeta['files']), default=''),
-             'note': f"결제일 {rmeta['start']} ~ {rmeta['end']} · " + ' · '.join(f'{k} {v}' for k, v in rmeta['by_channel'].items())},
-            {'label': '컬러·사이즈 판매 (주문 원본 + 팝업)', 'file': f'주문 파일 {len(used)}개 (무신사 제외)', 'modified_kst': '',
-             'note': f'{SEASON_START.isoformat()} 이후 결제분'},
+            {'label': '최근 3일 판매 (주문 원본, 팝업 제외)', 'file': ', '.join(f['file'] for f in files3),
+             'modified_kst': max((f['modified_kst'] for f in files3), default=''),
+             'note': f"결제일 {min(win3)} ~ {D} · " + ' · '.join(f'{k} {v}' for k, v in r3ch.items())},
+            {'label': '컬러·사이즈·가격·CM2 (주문 원본 + 무신사 + 팝업)', 'file': f'주문 파일 {len(used)}개', 'modified_kst': '',
+             'note': f'{SEASON_START.isoformat()} 이후 결제분 · 반품 회수중 {sum(returning.values())}개'},
         ],
         'warehouse_col': wh_col.strftime('%Y-%m-%d %H:%M'),
-        'recent3d': {'start': rmeta['start'], 'end': rmeta['end']},
+        'recent3d': {'start': min(win3).isoformat(), 'end': D.isoformat()},
+        'stale': stale,
         'signature': {'hub': metas['hub']['modifiedTime'], 'inventory': metas['inventory']['modifiedTime'],
                       'popup': metas['popup']['modifiedTime'], 'orders': sig},
     }
     new = {'season_kpi': kpi, 'monthly': monthly, 'products': products, 'inventory': inventory,
-           'inventory_by_size': by_size, 'color_size': color_size, 'recent3d': recent, 'cancels': cancels, 'meta': meta}
+           'inventory_by_size': by_size, 'color_size': color_size, 'recent3d': recent, 'cancels': cancels,
+           'price_kpi': price_kpi, 'price_weekly': price_weekly, 'channel_mix': channel_mix, 'meta': meta}
 
     notes = []
     validate(new, prev, notes)
