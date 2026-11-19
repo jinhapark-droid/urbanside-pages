@@ -94,7 +94,9 @@ button{font:inherit;color:inherit}
 .seg{display:flex;gap:6px;flex-wrap:wrap}
 .seg button{height:44px;padding:0 14px;border:0;border-radius:12px;background:var(--soft);color:var(--t2);font-size:14px;font-weight:600;cursor:pointer}
 .seg button.on{background:var(--t1);color:var(--card)}
-.thead,.prow{display:grid;grid-template-columns:minmax(0,2.4fr) repeat(5,minmax(0,.68fr)) minmax(0,1.25fr) minmax(0,.7fr) 20px;align-items:center;gap:10px}
+/* 품목 행·토글 안 컬러/사이즈 행이 같은 열 격자를 쓴다 */
+:root{--cols:minmax(0,2.4fr) repeat(5,minmax(0,.68fr)) minmax(0,1.25fr) minmax(0,.7fr) 20px}
+.thead,.prow,.chead,.crow{display:grid;grid-template-columns:var(--cols);align-items:center;gap:10px}
 .thead{font-size:12.5px;color:var(--t3);font-weight:600;padding:14px 12px 8px;border-bottom:1px solid var(--line)}
 .thead span:not(:first-child),.prow .n{text-align:right}
 .prow{padding:16px 12px;border-radius:14px;cursor:pointer;transition:background .12s}
@@ -111,7 +113,7 @@ button{font:inherit;color:inherit}
 .prow .chev{color:var(--t4);transition:transform .2s;text-align:center}
 .item.open .prow .chev{transform:rotate(90deg)}
 .item+.item{border-top:1px solid var(--line)}
-.detail{display:none;padding:4px 12px 20px}
+.detail{display:none;padding:0 0 16px}
 .item.open .detail{display:block}
 
 @media (max-width:899px){
@@ -125,29 +127,47 @@ button{font:inherit;color:inherit}
 }
 
 /* 컬러·사이즈 */
-.cs{background:var(--soft);border-radius:16px;padding:8px}
-.cs-note{font-size:12.5px;color:var(--t3);padding:8px 10px 6px}
-.crow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(110px,170px) 52px 16px;align-items:center;gap:12px;padding:12px 10px;border-radius:12px}
+.cs{background:var(--soft);border-radius:16px;padding:4px 0 8px}
+.chead{font-size:12px;color:var(--t3);font-weight:600;padding:12px 12px 8px;border-bottom:1px solid var(--track)}
+.chead span{text-align:right}.chead span:first-child,.chead .stl{text-align:left}
+.crow{padding:11px 12px;border-radius:12px}
 .crow.color{cursor:pointer}
-.crow.color:hover{background:var(--card)}
-.crow .cn{font-size:14.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.crow .cq{font-size:13px;color:var(--t3);white-space:nowrap;text-align:right}
-.crow .cq b{color:var(--t1);font-weight:600}
-.crow .cq .w{color:var(--wh)}.crow .cq .p{color:var(--pop)}
-.crow .bar{height:8px}
-.crow .pc{font-size:14px;font-weight:700;text-align:right}
-.crow .chev{color:var(--t4);font-size:12px;transition:transform .2s}
+.crow.color:hover{background:color-mix(in srgb,var(--card) 70%,transparent)}
+.crow .cn{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:8px;min-width:0}
+.crow .cn::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--t4);flex:none}
+.crow .n{font-size:14.5px;font-weight:500;text-align:right}
+.crow .n small{display:none}
+.crow .n.w{color:var(--wh)}.crow .n.p{color:var(--pop)}
+.crow .bar{height:8px;margin-right:62px}
+.crow .pc{font-size:14.5px;font-weight:700;text-align:right}
+.crow .chev{color:var(--t4);transition:transform .2s;text-align:center}
 .cgroup.open .crow.color .chev{transform:rotate(90deg)}
-.sizes{display:none;padding:0 0 6px 14px}
+.sizes{display:none;padding-bottom:4px}
 .cgroup.open .sizes{display:block}
-.sizes .crow{padding:8px 10px}
-.sizes .crow .cn{font-weight:500;color:var(--t2)}
+.sizes .crow{padding:7px 12px}
+.sizes .crow .cn{font-weight:500;color:var(--t2);padding-left:16px;font-size:14px}
+.sizes .crow .cn::before{display:none}
+.sizes .crow .n{font-size:14px;color:var(--t2)}
 .sizes .crow .bar{height:6px}
-.sizes .crow .pc{font-weight:600;font-size:13px}
+.sizes .crow .pc{font-weight:600;font-size:14px}
 .crow.total{border-top:1px solid var(--track);border-radius:0;margin-top:4px}
-@media (max-width:599px){
-  .crow{grid-template-columns:minmax(0,1fr) 48px 14px;grid-template-areas:"cn pc chev" "bar bar bar" "cq cq cq";gap:6px 10px}
-  .crow .cn{grid-area:cn}.crow .pc{grid-area:pc}.crow .chev{grid-area:chev}.crow .bar{grid-area:bar}.crow .cq{grid-area:cq;text-align:left}
+.crow.total .cn::before{display:none}
+@media (max-width:899px){
+  .chead{display:none}
+  .cs{padding:6px 4px}
+  .crow{grid-template-columns:repeat(3,minmax(0,1fr)) 16px;grid-template-areas:"cn cn pc chev" "bar bar bar ." "s w p .";gap:6px 12px;padding:12px}
+  .crow .cn{grid-area:cn}.crow .pc{grid-area:pc}.crow .chev{grid-area:chev}
+  .crow .bar{grid-area:bar;margin-right:0}
+  .crow .x{display:none}
+  .crow .n{text-align:left;display:flex;flex-direction:column;font-weight:600}
+  .crow .n small{display:block;font-size:11.5px;color:var(--t3);font-weight:500}
+  .crow .s{grid-area:s}.crow .n.w{grid-area:w}.crow .n.p{grid-area:p}
+  .sizes .crow .cn{padding-left:12px}
+  /* 모바일 사이즈 줄: 한 줄 요약 (사이즈 | 판매 | 창고 | 팝업 | %) */
+  .sizes .crow{grid-template-columns:52px repeat(3,minmax(0,1fr)) 56px;grid-template-areas:"cn s w p pc";padding:7px 12px}
+  .sizes .crow .bar,.sizes .crow .chev{display:none}
+  .sizes .crow .n{display:block;white-space:nowrap;font-weight:500}
+  .sizes .crow .n small{display:none}
 }
 
 .note{font-size:14px;color:var(--t2);line-height:1.6}
@@ -305,14 +325,19 @@ function render(D){
 
   // 컬러·사이즈 (재고 대비 소진율)
   const rate=(s,w,p)=>(s+w+p)>0?s/(s+w+p):0;
-  const crow=(cls,name,s,w,p,chev)=>{const r=rate(s,w,p);
-    return `<div class="crow ${cls}"><span class="cn">${esc(name)}</span><span class="cq tnum">판매 <b>${won(s)}</b> · <span class="w">창고 ${won(w)}</span> · <span class="p">팝업 ${won(p)}</span></span><div class="bar"><i style="width:${Math.min(100,r*100)}%;background:var(--${tone(r)})"></i></div><span class="pc tnum">${pct(r)}</span><span class="chev">${chev?'›':''}</span></div>`;};
+  // 열 순서는 품목 행과 같다: 이름 | 판매 | (최근3일) | 창고 | 팝업 | (매출) | 소진율 막대 | 재고 대비 % | ›
+  const crow=(cls,name,s,w,p,chev)=>{const r=rate(s,w,p),t=tone(r);
+    return `<div class="crow ${cls}"><span class="cn">${esc(name)}</span>
+      <span class="n s tnum"><small>판매</small>${won(s)}</span><span class="x"></span>
+      <span class="n w tnum"><small>창고</small>${won(w)}</span><span class="n p tnum"><small>팝업</small>${won(p)}</span><span class="x"></span>
+      <div class="bar"><i style="width:${Math.min(100,r*100)}%;background:var(--${t})"></i></div>
+      <span class="pc tnum" style="color:var(--${t})">${pct(r)}</span><span class="chev">${chev?'›':''}</span></div>`;};
   function detail(name){
     const S=cs[name]||{},W=whS[name]||{},P=popS[name]||{};
     const colors=[...new Set([...Object.keys(S),...Object.keys(W),...Object.keys(P)])];
     if(!colors.length)return '<div class="empty">컬러·사이즈 데이터가 없어요</div>';
     const rows=colors.map(c=>({c,s:sum(S[c]),w:sum(W[c]),p:sum(P[c])})).sort((a,b)=>b.s-a.s||(b.w+b.p)-(a.w+a.p));
-    let h='<div class="cs"><div class="cs-note">컬러별 소진율 = 판매 ÷ (판매 + 창고 + 팝업) · 컬러를 누르면 사이즈별</div>',ts=0,tw=0,tp=0;
+    let h='<div class="cs"><div class="chead"><span>컬러 · 누르면 사이즈별</span><span>판매</span><span></span><span>창고</span><span>팝업</span><span></span><span class="stl" style="grid-column:7/9">재고 대비 소진율 · 판매÷(판매+창고+팝업)</span><span></span></div>',ts=0,tw=0,tp=0;
     rows.forEach(({c,s,w,p})=>{ts+=s;tw+=w;tp+=p;
       const sz=[...new Set([...Object.keys(S[c]||{}),...Object.keys(W[c]||{}),...Object.keys(P[c]||{})])].sort((a,b)=>sizeKey(a)-sizeKey(b));
       h+=`<div class="cgroup">${crow('color',c,s,w,p,true)}<div class="sizes">${sz.map(z=>crow('',z,(S[c]||{})[z]||0,(W[c]||{})[z]||0,(P[c]||{})[z]||0,false)).join('')}</div></div>`;});
