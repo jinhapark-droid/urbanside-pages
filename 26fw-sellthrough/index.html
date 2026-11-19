@@ -1,0 +1,327 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>26FW 소진율 대시보드</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#F3F5F2;--surface:#FFFFFF;--sunk:#EAEEEA;--line:#D8DED8;--line-soft:#E6EBE6;
+  --ink:#18221F;--ink-2:#4A5752;--ink-3:#7A8681;
+  --accent:#0E5B55;--accent-ink:#0B4843;--accent-tint:#9CCBC4;--accent-wash:#E3F0ED;
+  --warn:#A8660B;--warn-wash:#FBEFD9;--crit:#B23A26;--crit-wash:#FBE5E0;--good:#2F7A3A;--good-wash:#E3F2E4;
+  --radius:10px;
+  --sans:"Noto Sans KR",Pretendard,-apple-system,"Malgun Gothic",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#111614;--surface:#18201D;--sunk:#1F2825;--line:#2E3A36;--line-soft:#25302C;
+  --ink:#E6ECE9;--ink-2:#AEBAB5;--ink-3:#7F8C87;
+  --accent:#4FB3A7;--accent-ink:#7FD0C5;--accent-tint:#2A5E58;--accent-wash:#1B302C;
+  --warn:#E0A64A;--warn-wash:#33281A;--crit:#EE7A64;--crit-wash:#3A211C;--good:#79C585;--good-wash:#1D2F20;}}
+:root[data-theme="dark"]{
+  --ground:#111614;--surface:#18201D;--sunk:#1F2825;--line:#2E3A36;--line-soft:#25302C;
+  --ink:#E6ECE9;--ink-2:#AEBAB5;--ink-3:#7F8C87;
+  --accent:#4FB3A7;--accent-ink:#7FD0C5;--accent-tint:#2A5E58;--accent-wash:#1B302C;
+  --warn:#E0A64A;--warn-wash:#33281A;--crit:#EE7A64;--crit-wash:#3A211C;--good:#79C585;--good-wash:#1D2F20;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5}
+
+/* 비밀번호 화면 (chungcheong2611-alloc 과 같은 구성) */
+#gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--ground);z-index:10}
+.g{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:32px 28px;max-width:360px;width:100%;text-align:center}
+.g h1{font-size:16px;margin:0 0 6px}.g p{font-size:13px;color:var(--ink-2);margin:0 0 18px;line-height:1.5}
+.g input{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:8px;font-size:16px;background:var(--surface);color:var(--ink)}
+.g button{width:100%;margin-top:10px;padding:11px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+.g button:disabled{opacity:.6;cursor:wait}
+.err{color:var(--crit);font-size:12.5px;margin-top:10px;display:none}
+
+.ud{max-width:1180px;margin:0 auto;padding:20px 16px 40px;display:none;flex-direction:column;gap:20px}
+.ud.on{display:flex}
+.num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px 20px}
+.eyebrow{font-size:11px;letter-spacing:.08em;color:var(--ink-3);font-weight:600}
+h1.t{font-size:24px;font-weight:700;margin:2px 0 0;letter-spacing:-.01em}
+.takeaway{font-size:13px;color:var(--ink-2);margin:6px 0 0;max-width:62ch}
+.asof{font-size:12px;color:var(--ink-3)}
+
+.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.kpi{background:var(--surface);padding:16px 18px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.kpi .label{font-size:12px;color:var(--ink-2);font-weight:500;display:flex;justify-content:space-between;align-items:center;gap:6px}
+.kpi .value{font-family:var(--mono);font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
+.kpi .sub{font-size:12px;color:var(--ink-3)}
+.kpi.crit .value{color:var(--crit)}
+.kpi .pill{margin-top:4px;align-self:flex-start}
+.track{height:5px;background:var(--sunk);border-radius:3px;margin-top:8px;position:relative}
+.track .fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;background:var(--accent)}
+.track .tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink)}
+@media (max-width:760px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.kpi{padding:12px}.kpi .value{font-size:17px}}
+
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.good{background:var(--good-wash);color:var(--good)}
+.pill.late{background:var(--crit-wash);color:var(--crit)}
+.pill.warn{background:var(--warn-wash);color:var(--warn)}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+.panel-h{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;padding:14px 18px 10px}
+.panel-h h2{font-size:15px;font-weight:600;margin:0}
+.hint{font-size:12px;color:var(--ink-3)}
+
+.sched{display:flex;flex-direction:column;padding:4px 10px 12px;gap:2px}
+.srow{display:grid;grid-template-columns:52px 1fr 120px 90px;align-items:center;gap:12px;padding:7px 8px}
+.srow .d{font-family:var(--mono);font-size:13px}
+.srow .track{height:12px;margin:0;border-radius:3px}
+.srow .track .fill{border-radius:0 3px 3px 0}
+.srow .q{font-family:var(--mono);text-align:right;font-weight:600;font-size:13px}
+.srow .c{font-size:11px;color:var(--ink-3);text-align:right}
+@media (max-width:560px){.srow{grid-template-columns:36px 1fr 104px;gap:8px}.srow .c{display:none}.srow .q{font-size:12px}}
+
+.filters{display:flex;gap:8px;padding:0 18px 12px}
+.filters input{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--ground);color:var(--ink);border-radius:8px;padding:6px 10px;flex:1 1 220px;min-width:0}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--ink-2);align-items:center;padding:0 18px 10px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.sw{width:12px;height:12px;display:inline-block;border-radius:3px}
+
+.tablebox{overflow-x:auto;border-top:1px solid var(--line)}
+table{border-collapse:collapse;width:100%;min-width:1000px;table-layout:fixed}
+th,td{padding:9px 10px;text-align:left;vertical-align:middle;border-bottom:1px solid var(--line-soft)}
+th{font-size:11px;font-weight:600;color:var(--ink-3);letter-spacing:.02em;background:var(--surface);white-space:nowrap}
+th.n,td.n{text-align:right}
+th.wh,td.wh{background:color-mix(in srgb,var(--accent-wash) 45%,transparent)}
+tr.item{cursor:pointer}
+tr.item:hover td{background:var(--sunk)}
+td.name{font-weight:500}
+td.n{font-family:var(--mono);font-size:13px}
+.caret{display:inline-block;width:12px;color:var(--ink-3);transition:transform .15s}
+tr.item.open .caret{transform:rotate(90deg)}
+.bar{position:relative;width:100px;height:8px;background:var(--sunk);border-radius:2px;flex:none}
+.bar i{display:block;height:100%;border-radius:2px;position:absolute;left:0;top:0}
+.bar .tick{position:absolute;top:-3px;width:2px;height:14px;background:var(--ink)}
+tr.detail td{background:var(--ground);padding:0 12px 14px 32px}
+
+.cs-list{padding:2px 0 10px;max-width:760px}
+.cs-row{display:grid;grid-template-columns:16px minmax(90px,1fr) minmax(170px,auto) 170px;align-items:center;column-gap:12px;padding:7px 10px;border-radius:6px;line-height:1.3}
+.cs-row.color{cursor:pointer}
+.cs-row.color:hover{background:var(--sunk)}
+.cs-caret{font-size:10px;color:var(--ink-3);transition:transform .15s}
+.cs-row.open .cs-caret{transform:rotate(90deg)}
+.cs-name{min-width:0;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-qty{font-family:var(--mono);font-size:13px;text-align:right;white-space:nowrap}
+.cs-stock{color:var(--ink-3);font-size:11.5px;margin-left:6px;font-family:var(--sans)}
+.cs-stock b{color:var(--ink-2);font-weight:600}
+.cs-sell{display:flex;align-items:center;gap:8px}
+.cs-bar{flex:1;height:8px;background:var(--sunk);border-radius:2px;overflow:hidden}
+.cs-bar i{display:block;height:100%;background:var(--accent)}
+.cs-share{width:48px;font-family:var(--mono);font-size:12.5px;text-align:right}
+.cs-sizes{padding-left:16px}
+.cs-sizes .cs-row{padding:4px 10px;border-bottom:1px dashed var(--line-soft);font-size:12.5px;color:var(--ink-2)}
+.cs-sizes .cs-name{font-weight:400;font-size:12.5px}
+.cs-sizes .cs-bar{height:5px}.cs-sizes .cs-bar i{background:var(--accent-tint)}
+.cs-row.total{margin-top:4px;border-top:1px solid var(--line);font-weight:600}
+.cs-row.total .cs-bar i{background:var(--ink-3)}
+.cs-empty{font-size:12px;color:var(--ink-3);padding:10px 16px}
+
+.banner{border-radius:var(--radius);padding:12px 16px;font-size:13px;border:1px solid var(--line);background:var(--surface);color:var(--ink-2)}
+.banner strong{display:block;margin-bottom:2px;color:var(--ink)}
+.meta{font-size:12px;color:var(--ink-3);display:flex;flex-direction:column;gap:6px;padding:12px 16px}
+.meta dl{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:4px 14px;margin:0}
+.meta dt{color:var(--ink-2);font-weight:500}
+.meta dd{margin:0;overflow-wrap:anywhere}
+@media (max-width:560px){.meta dl{grid-template-columns:1fr}.meta dd{margin-bottom:6px}}
+</style></head><body>
+<div id="gate"><div class="g"><h1>26FW 소진율 대시보드</h1><p>어반사이드 어패럴 판매·재고 현황 (내부 공유용)<br>비밀번호를 입력하세요</p>
+<input id="pw" type="password" inputmode="numeric" placeholder="비밀번호" autocomplete="current-password" autofocus><button id="go" onclick="unlock()">열기</button><div class="err" id="err">비밀번호가 올바르지 않습니다</div></div></div>
+
+<main class="ud" id="app">
+  <header class="top">
+    <div>
+      <div class="eyebrow">26FW 어반사이드 어패럴 · 재무모델 허브 연동</div>
+      <h1 class="t">소진율 대시보드</h1>
+      <p class="takeaway" id="takeaway">—</p>
+    </div>
+    <div class="asof" id="asof">—</div>
+  </header>
+
+  <section class="kpis" aria-label="요약">
+    <div class="kpi"><span class="label">시즌 목표매출</span><span class="value" id="k-target">—</span><span class="sub">2026-08 ~ 2027-02</span></div>
+    <div class="kpi" id="kpi-cum"><span class="label">시즌 누적매출</span><span class="value" id="k-cum">—</span><span class="sub" id="cum-sub">—</span>
+      <div class="track"><div class="fill" id="cum-fill"></div><div class="tick" id="cum-mark"></div></div><span class="pill" id="cum-flag">—</span></div>
+    <div class="kpi" id="kpi-month"><span class="label" id="month-label">당월 매출</span><span class="value" id="month-actual">—</span><span class="sub" id="month-sub">—</span>
+      <div class="track"><div class="fill" id="month-fill"></div><div class="tick" id="month-mark"></div></div><span class="pill" id="month-flag">—</span></div>
+    <div class="kpi" id="kpi-st"><span class="label">평균 소진율<span id="risk-badge"></span></span><span class="value" id="avg-st">—</span><span class="sub" id="st-sub">—</span><span class="pill" id="st-flag">—</span></div>
+    <div class="kpi"><span class="label">예상 최종 소진율(2월말)</span><span class="value" id="proj-rate">—</span><span class="sub" id="proj-rate-sub">—</span></div>
+    <div class="kpi"><span class="label">예상 최종 매출(2월말)</span><span class="value" id="proj-rev">—</span><span class="sub" id="proj-rev-sub">—</span></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-h"><h2>월별 목표 대비 실적</h2><span class="hint">세로선 = 그달 목표매출</span></div>
+    <div class="sched" id="monthly"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-h">
+      <h2>품목별 소진율 (23개 SKU)</h2>
+      <span class="hint">매출 높은 순 · 소진율(발주기준) = 판매 ÷ 발주 · 소진율(재고기준) = 판매 ÷ (창고+팝업+판매) · 행을 누르면 컬러·사이즈별 판매와 창고/팝업 재고</span>
+    </div>
+    <div class="filters"><input type="search" id="q" placeholder="품목명 검색…"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--good)"></i>순항(30% 이상)</span>
+      <span><i class="sw" style="background:var(--warn)"></i>지연(15~30%)</span>
+      <span><i class="sw" style="background:var(--crit)"></i>위험(15% 미만)</span>
+      <span>│ 검정 세로선 = 오늘 기준 시즌 목표 소진율</span>
+    </div>
+    <div class="tablebox">
+      <table id="tbl">
+        <colgroup><col style="width:28px"><col><col style="width:64px"><col style="width:72px"><col style="width:72px"><col style="width:68px">
+          <col style="width:92px"><col style="width:76px"><col style="width:120px"><col style="width:160px"><col style="width:96px"></colgroup>
+        <thead><tr><th></th><th>품목명</th><th>히어로</th><th class="n">발주</th><th class="n">판매</th><th class="n">최근 3일</th>
+          <th class="n wh">가용재고(창고)</th><th class="n wh">팝업재고</th><th class="n">매출</th><th>소진율(발주기준)</th><th class="n">소진율(재고기준)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="banner">
+    <strong>재고 집계 기준 — 창고와 팝업은 독립 열</strong>
+    가용재고(창고) = 재고관리시트 "일자 별 재고조회 (당시재고)"의 가장 최근 17:00 컬럼(매일 18시경 갱신 → 다음날 09:07 반영). 팝업재고 = 아난티 코브·더현대 오모테산도·더현대 충청 잔여재고("26FW 팝업 현황" 재고현황). 두 값은 합치지 않고 따로 표시합니다. 판매·매출에는 팝업 판매분이 포함됩니다(엔화 ¥1=9원).
+  </div>
+
+  <section class="panel">
+    <div class="panel-h"><h2>데이터 기준 시점</h2><span class="hint" id="built">—</span></div>
+    <div class="meta"><dl id="meta"></dl></div>
+  </section>
+</main>
+
+<script>
+const ITER_DEFAULT=100000, PW_KEY='u26fw_st_pw';
+let DOC=null;
+function b64(s){const b=atob(s),a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return a;}
+async function loadDoc(){if(DOC)return DOC;const r=await fetch('data/data.enc.json?t='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('data '+r.status);DOC=await r.json();return DOC;}
+async function decrypt(pw){const d=await loadDoc();const enc=new TextEncoder();
+  const km=await crypto.subtle.importKey('raw',enc.encode(pw),'PBKDF2',false,['deriveKey']);
+  const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(d.salt),iterations:d.iter||ITER_DEFAULT,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['decrypt']);
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(d.iv)},key,b64(d.ct));return JSON.parse(new TextDecoder().decode(pt));}
+async function unlock(){const pw=document.getElementById('pw').value,btn=document.getElementById('go'),err=document.getElementById('err');
+  btn.disabled=true;err.style.display='none';let data;
+  try{data=await decrypt(pw);}catch(e){btn.disabled=false;err.textContent=e&&e.name==='OperationError'?'비밀번호가 올바르지 않습니다':'데이터를 불러오지 못했습니다';err.style.display='block';try{sessionStorage.removeItem(PW_KEY);}catch(_){}return;}
+  try{sessionStorage.setItem(PW_KEY,pw);}catch(e){}
+  document.getElementById('gate').style.display='none';document.getElementById('app').classList.add('on');render(data);}
+document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')unlock();});
+(()=>{try{const s=sessionStorage.getItem(PW_KEY);if(s){document.getElementById('pw').value=s;unlock();}}catch(e){}})();
+
+const $=id=>document.getElementById(id);
+const won=v=>Math.round(v).toLocaleString('ko-KR');
+const pct=v=>(v*100).toFixed(1)+'%';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const compact=v=>v>=1e8?(v/1e8).toFixed(v%1e8?1:0)+'억':v>=1e4?Math.round(v/1e4).toLocaleString('ko-KR')+'만':won(v);
+const SIZE_ORDER=['XS','S','M','L','XL','XXL','OS'];
+const sizeKey=s=>{const i=SIZE_ORDER.indexOf(s);return i<0?99:i;};
+function flag(el,cls,text){el.className='pill '+cls;el.textContent=text;}
+
+function render(D){
+  const k=D.season_kpi[0], meta=D.meta||{};
+  const recent={},wh={},pop={};D.recent3d.forEach(r=>recent[r.name]=r.recent3d_qty);
+  D.inventory.forEach(r=>{wh[r.name]=r.available_qty;pop[r.name]=r.popup_available_qty||0;});
+  const whS={},popS={},cs={};
+  const put=(m,p,c,s,v)=>{((m[p]??={})[c]??={})[s]=(m[p][c][s]||0)+v;};
+  D.inventory_by_size.forEach(r=>{put(whS,r.product,r.color,r.size,r.available_qty);put(popS,r.product,r.color,r.size,r.popup_qty||0);});
+  D.color_size.forEach(r=>put(cs,r.product,r.color,r.size,r.qty));
+
+  // 시즌 누적
+  const target=k.target_cum_rate, gap=k.season_progress-k.target_cum_rate;
+  $('asof').textContent=`${k.as_of} 기준 · 갱신 ${meta.built_at_kst||''}`;
+  $('k-target').textContent=won(k.season_target)+'원';
+  $('k-cum').textContent=won(k.cum_actual)+'원';
+  $('cum-sub').textContent=`진행률 ${pct(k.season_progress)} · 오늘 목표 ${pct(target)}`;
+  $('cum-fill').style.width=Math.min(100,k.season_progress*100)+'%';
+  $('cum-mark').style.left=Math.min(100,target*100)+'%';
+  const behind=gap<-0.03;
+  $('cum-fill').style.background=behind?'var(--crit)':gap<0?'var(--warn)':'var(--good)';
+  flag($('cum-flag'),behind?'late':gap<0?'warn':'good',(gap>=0?'+':'')+pct(gap)+(behind?' 목표 미달':gap<0?' 소폭 지연':' 순항'));
+  if(behind)$('kpi-cum').classList.add('crit');
+  $('takeaway').textContent=`시즌 누적 ${won(k.cum_actual)}원, 목표 대비 ${pct(k.season_progress)} — 오늘 기준 목표(${pct(target)})보다 ${Math.abs(gap*100).toFixed(1)}%p ${gap>=0?'앞서 있습니다':'뒤처져 있습니다'}.`;
+
+  // 당월
+  const asOf=new Date(k.as_of+'T00:00:00+09:00'), mLabel=(asOf.getMonth()+1)+'월';
+  const cur=D.monthly.find(r=>r.month===mLabel);
+  if(cur){
+    const prog=cur.target?cur.actual/cur.target:0, dim=new Date(asOf.getFullYear(),asOf.getMonth()+1,0).getDate(), pace=asOf.getDate()/dim, ahead=prog>=pace;
+    $('month-label').textContent=`당월(${mLabel}) 매출`;
+    $('month-actual').textContent=won(cur.actual)+'원';
+    $('month-sub').textContent=`목표 ${won(cur.target)}원 중 ${pct(prog)}`;
+    $('month-fill').style.width=Math.min(100,prog*100)+'%';$('month-mark').style.left=Math.min(100,pace*100)+'%';
+    $('month-fill').style.background=ahead?'var(--good)':'var(--crit)';
+    flag($('month-flag'),ahead?'good':'late',ahead?'일수 대비 순항':'일수 대비 지연');
+    if(!ahead)$('kpi-month').classList.add('crit');
+  }
+
+  // 예상 최종 (재고 85% 추가 소진, 시즌오프 -7%)
+  let sold=0,rev=0,stock=0;
+  D.products.forEach(r=>{sold+=r.sold_qty;rev+=r.sold_rev;stock+=(wh[r.name]||0)+(pop[r.name]||0);});
+  const avgP=sold?rev/sold:0, fut=stock*0.85;
+  $('proj-rev').textContent=won(k.cum_actual+fut*avgP*0.93)+'원';
+  $('proj-rev-sub').textContent=`재고(창고+팝업) ${won(stock)}개×85%×평균단가 ${won(avgP)}원, 시즌오프 -7%`;
+  $('proj-rate').textContent=pct(Math.min(1,(sold+fut)/(sold+stock)));
+  $('proj-rate-sub').textContent=`현재(재고기준) ${pct(sold/(sold+stock))} · 재고의 85% 추가 소진 가정`;
+
+  // 평균 소진율
+  const avg=D.products.reduce((a,r)=>a+r.sell_through,0)/D.products.length, sg=avg-target;
+  $('avg-st').textContent=pct(avg);
+  $('st-sub').textContent=`목표 ${pct(target)} 대비 ${sg>=0?'+':''}${pct(sg)}`;
+  flag($('st-flag'),sg<-0.1?'late':sg<0?'warn':'good',sg<-0.1?'심각한 지연':sg<0?'경미한 지연':'순항');
+  if(sg<-0.1)$('kpi-st').classList.add('crit');
+  const risk=D.products.filter(r=>r.sell_through<0.15).length;
+  if(risk)$('risk-badge').innerHTML=` <span class="pill late">위험 ${risk}개</span>`;
+
+  // 월별
+  const max=Math.max(...D.monthly.map(r=>Math.max(r.target,r.actual)))||1;
+  $('monthly').innerHTML=D.monthly.map(r=>{const over=r.target>0&&r.actual>=r.target;
+    return `<div class="srow"><div class="d">${esc(r.month)}</div><div class="track"><div class="fill" style="width:${Math.min(100,r.actual/max*100)}%;background:${over?'var(--good)':'var(--accent)'}"></div><div class="tick" style="left:${Math.min(100,r.target/max*100)}%"></div></div><div class="q">${won(r.actual)}원</div><div class="c">목표 ${compact(r.target)}</div></div>`;}).join('');
+
+  // 품목 표
+  const maxST=Math.max(...D.products.map(r=>r.sell_through),0.01);
+  const stockTxt=(w,p)=>w===undefined?'창고 —':`창고 <b>${won(w)}</b> · 팝업 <b>${won(p||0)}</b>`;
+  const sum=m=>m?Object.values(m).reduce((a,b)=>a+b,0):0;
+  function matrix(name){
+    const colors=cs[name],W=whS[name]||{},P=popS[name]||{};
+    if(!colors)return '<div class="cs-empty">컬러·사이즈 판매 데이터 없음</div>';
+    const total=Object.values(colors).reduce((s,m)=>s+sum(m),0);
+    const allColors=new Set([...Object.keys(colors),...Object.keys(W),...Object.keys(P)]);
+    const ent=[...allColors].map(c=>[c,colors[c]||{},sum(colors[c])]).sort((a,b)=>b[2]-a[2]);
+    let gw=0,gp=0,h='<div class="cs-list">';
+    ent.forEach(([c,sizes,ct])=>{
+      const w=W[c]||{},p=P[c]||{},share=total?ct/total:0;gw+=sum(w);gp+=sum(p);
+      h+=`<div class="cs-row color"><span class="cs-caret">▸</span><span class="cs-name">${esc(c)}</span><span class="cs-qty">${won(ct)}<span class="cs-stock">${stockTxt(sum(w),sum(p))}</span></span><span class="cs-sell"><span class="cs-bar"><i style="width:${Math.min(100,share*200)}%"></i></span><span class="cs-share">${pct(share)}</span></span></div><div class="cs-sizes" hidden>`;
+      const sz=[...new Set([...Object.keys(sizes),...Object.keys(w),...Object.keys(p)])].sort((a,b)=>sizeKey(a)-sizeKey(b));
+      sz.forEach(s=>{const q=sizes[s]||0,ss=ct?q/ct:0;
+        h+=`<div class="cs-row"><span></span><span class="cs-name">${esc(s)}</span><span class="cs-qty">${won(q)}<span class="cs-stock">${stockTxt(w[s]||0,p[s]||0)}</span></span><span class="cs-sell"><span class="cs-bar"><i style="width:${Math.min(100,ss*100)}%"></i></span><span class="cs-share">${pct(ss)}</span></span></div>`;});
+      h+='</div>';});
+    h+=`<div class="cs-row total"><span></span><span class="cs-name">합계</span><span class="cs-qty">${won(total)}<span class="cs-stock">${stockTxt(gw,gp)}</span></span><span class="cs-sell"><span class="cs-bar"><i style="width:100%"></i></span><span class="cs-share">100.0%</span></span></div></div>`;
+    return h;
+  }
+  function table(filter){
+    const tb=document.querySelector('#tbl tbody');tb.innerHTML='';
+    D.products.slice().sort((a,b)=>b.sold_rev-a.sold_rev).filter(r=>!filter||r.name.includes(filter)).forEach(r=>{
+      const st=r.sell_through<0.15?'crit':r.sell_through<0.3?'warn':'good';
+      const w=wh[r.name],p=pop[r.name],all=(w||0)+(p||0),sts=(all+r.sold_qty)>0?r.sold_qty/(all+r.sold_qty):null;
+      const tr=document.createElement('tr');tr.className='item';
+      tr.innerHTML=`<td><span class="caret">▸</span></td><td class="name">${esc(r.name)}</td><td>${r.hero==='Y'?'<span class="pill good">히어로</span>':''}</td>
+        <td class="n">${won(r.moq)}</td><td class="n">${won(r.sold_qty)}</td><td class="n">${recent[r.name]!==undefined?won(recent[r.name]):'—'}</td>
+        <td class="n wh">${w!==undefined?won(w):'—'}</td><td class="n wh">${p!==undefined?won(p):'—'}</td><td class="n">${won(r.sold_rev)}</td>
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="bar"><span class="tick" style="left:${Math.min(100,target/maxST*100)}%"></span><i style="width:${Math.min(100,r.sell_through/maxST*100)}%;background:var(--${st})"></i></div><span class="num" style="font-size:12.5px">${pct(r.sell_through)}</span></div></td>
+        <td class="n">${sts!==null?pct(sts):'—'}</td>`;
+      const dt=document.createElement('tr');dt.className='detail';dt.hidden=true;
+      const td=document.createElement('td');td.colSpan=11;td.innerHTML=matrix(r.name);dt.appendChild(td);
+      tr.addEventListener('click',()=>{dt.hidden=!dt.hidden;tr.classList.toggle('open',!dt.hidden);});
+      td.addEventListener('click',e=>{const row=e.target.closest('.cs-row.color');if(!row)return;row.classList.toggle('open');row.nextElementSibling.hidden=!row.nextElementSibling.hidden;});
+      tb.appendChild(tr);tb.appendChild(dt);});
+  }
+  table('');$('q').addEventListener('input',e=>table(e.target.value.trim()));
+
+  // 데이터 기준 시점
+  $('built').textContent=`빌드 ${meta.built_at_kst||'—'} (KST)`;
+  $('meta').innerHTML=(meta.sources||[]).map(s=>`<dt>${esc(s.label)}</dt><dd>${esc(s.note)}${s.modified_kst?` · 파일 수정 ${esc(s.modified_kst)}`:''}<br><span style="color:var(--ink-3)">${esc(s.file)}</span></dd>`).join('');
+}
+</script>
+</body></html>

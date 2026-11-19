@@ -1,0 +1,7 @@
+# 평문 데이터·인증 파일은 절대 커밋하지 않는다
+*.plain.json
+*_plain.json
+*.xlsx
+*authorized_user*.json
+*service_account*.json
+__pycache__/
