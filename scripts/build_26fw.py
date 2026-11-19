@@ -97,8 +97,15 @@ def drive_session():
         cred = service_account.Credentials.from_service_account_info(json.loads(os.environ['GDRIVE_SA_KEY']), scopes=scopes)
     elif os.environ.get('GDRIVE_OAUTH_TOKEN') or os.environ.get('GDRIVE_OAUTH_TOKEN_FILE'):
         from google.oauth2.credentials import Credentials
-        raw = os.environ.get('GDRIVE_OAUTH_TOKEN') or open(os.environ['GDRIVE_OAUTH_TOKEN_FILE'], encoding='utf-8').read()
-        cred = Credentials.from_authorized_user_info(json.loads(raw))  # 토큰에 저장된 범위 그대로 사용
+        raw = os.environ.get('GDRIVE_OAUTH_TOKEN') or open(os.environ['GDRIVE_OAUTH_TOKEN_FILE'], encoding='utf-8-sig').read()
+        raw = raw.strip().lstrip('﻿').strip()
+        try:
+            info = json.loads(raw)
+        except json.JSONDecodeError:
+            # 값은 출력하지 않고 형태만 알려준다
+            raise SystemExit(f'GDRIVE_OAUTH_TOKEN 이 JSON이 아님 (길이 {len(raw)}, 첫 글자 {"{" if raw[:1] == "{" else "그 외"}) '
+                             '— jh_authorized_user.json 파일 내용 전체를 그대로 붙여넣어야 함')
+        cred = Credentials.from_authorized_user_info(info)  # 토큰에 저장된 범위 그대로 사용
     elif os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
         from google.oauth2 import service_account
         cred = service_account.Credentials.from_service_account_file(os.environ['GOOGLE_APPLICATION_CREDENTIALS'], scopes=scopes)
