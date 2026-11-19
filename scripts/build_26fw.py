@@ -248,7 +248,23 @@ def read_hub(buf, today):
             acc += m['target'] * today.day / (b - a).days
     kpi = [{'as_of': today.isoformat(), 'season_target': target, 'cum_actual': cum,
             'season_progress': round(cum / target, 4) if target else 0, 'target_cum_rate': round(acc / target, 4) if target else 0}]
-    return kpi, monthly, hub_products, refreshed
+
+    # 취소·반품 매출 (허브 00_취소매출현황: 자사몰·4910·29CM·일본 자사몰만 집계, 무신사·이지체인은 구조상 미집계)
+    cancels = []
+    wb = ws.parent
+    if '00_취소매출현황' in wb.sheetnames:
+        cg = [list(r) for r in wb['00_취소매출현황'].iter_rows(min_row=1, max_row=40, values_only=True)]
+        hi = next((i for i, r in enumerate(cg) if r and str(r[0] or '').strip() == '채널'), None)
+        if hi is not None:
+            ch = [str(v).strip() if v else '' for v in cg[hi]]
+            for r in cg[hi + 1:]:
+                name = str(r[0] or '').strip()
+                if not name or name == '합계' or name.startswith('('):
+                    break
+                for m in MONTHS:
+                    if m in ch:
+                        cancels.append({'channel': name, 'month': m, 'amount': num(r[ch.index(m)])})
+    return kpi, monthly, hub_products, refreshed, cancels
 
 
 # ───────────────────────── 창고 재고 ─────────────────────────
@@ -561,7 +577,7 @@ def main():
             raise ValidationError(f'{k} 원본이 백업 파일임: {m["name"]}')
         log(f'· {k}: {m["name"]} ({kst(m["modifiedTime"])})')
 
-    kpi, monthly, hub_products, hub_refreshed = read_hub(drv.get(metas['hub']), today)
+    kpi, monthly, hub_products, hub_refreshed, cancels = read_hub(drv.get(metas['hub']), today)
     wh_size, sku, colors, wh_col = read_inventory(drv.get(metas['inventory']))
     pop_stock, pop_store, pop_q, pop_rev, pop_cs, pop_stamp = read_popup(drv.get(metas['popup']), colors)
     recent, rmeta, ord_cs, used, sig = read_orders(drv, sku, colors, today)
@@ -607,7 +623,7 @@ def main():
                       'popup': metas['popup']['modifiedTime'], 'orders': sig},
     }
     new = {'season_kpi': kpi, 'monthly': monthly, 'products': products, 'inventory': inventory,
-           'inventory_by_size': by_size, 'color_size': color_size, 'recent3d': recent, 'meta': meta}
+           'inventory_by_size': by_size, 'color_size': color_size, 'recent3d': recent, 'cancels': cancels, 'meta': meta}
 
     notes = []
     validate(new, prev, notes)
