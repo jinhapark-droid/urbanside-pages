@@ -268,6 +268,7 @@ button{font:inherit;color:inherit}
       <li><b>객단가</b> = 쿠폰·적립금·할인 반영 후 실결제가 ÷ 수량. <b>할인율</b> = (정가 − 객단가) ÷ 정가. 원화 정가와 비교하려고 국내 판매만 써요(일본몰·오모테산도 제외).</li>
       <li><b>CM2</b> = 매출(VAT 제외) − 원가 − 채널수수료 − 운송비 − AS 예비비 3% − 반품·교환 왕복 운송비. 마케팅비 차감 전. 원가·수수료·운송비는 재무모델 허브 입력값을 쓰고, 무신사는 정산금액으로 실제 수수료를 계산해요. <span id="feenote"></span></li>
       <li>매출·판매수량은 허브 기준이고 <b>취소·반품을 뺀 순매출</b>이에요. 컬러·사이즈·가격·CM2는 주문 원본(무신사 포함)+팝업 기준이라 품목 합계와 1~2% 차이 날 수 있어요.</li>
+      <li><b>품절 임박</b>(n일분) = 실재고 ÷ 최근 14일 <b>평시</b> 판매 속도. 제이선·네고무카·4910 블프·고윈클럽 같은 외부 마켓 판매는 일시적인 거품이라 속도에서 뺍니다(마켓 기간·가격은 Price table 기준).</li>
       <li>팝업 엔화 판매는 ¥1=9원으로 환산해요.</li>
     </ul>
   </section>
@@ -404,13 +405,13 @@ function render(D){
   function flagFor(c){ // c: {s, real, q14, bo}
     if(c.bo>0)return `<i class="badge red">미출고 ${won(c.bo)}</i>`;
     if(c.real<=0&&c.s>0)return '<i class="badge red">품절</i>';
-    if(c.q14>0){const days=c.real/(c.q14/14);if(days<14)return `<i class="badge orange">${Math.max(1,Math.round(days))}일분</i>`;}
+    if(c.q14>0){const days=c.real/(c.q14/14);if(days<14)return `<i class="badge orange" title="외부 마켓을 뺀 최근 14일 평시 판매 속도 기준">${Math.max(1,Math.round(days))}일분</i>`;}
     return '';
   }
   const crow=(cls,name,c,chev)=>{const r=rate(c.s,c.real),t=tone(r);
     return `<div class="crow ${cls}"><span class="cn">${esc(name)}</span>
       <span class="n s tnum"><small>판매</small>${won(c.s)}</span>
-      <span class="n r14 tnum"><small>최근 14일</small>${won(c.q14)}</span>
+      <span class="n r14 tnum"><small>최근 14일 평시</small>${won(c.q14)}</span>
       <div class="st"><div class="bar"><i style="width:${Math.min(100,r*100)}%;background:var(--${t})"></i></div><b class="tnum" style="color:var(--${t})">${pct(r)}</b></div>
       <span class="n w wh tnum"><small>창고</small>${won(c.w)}</span><span class="n p pop tnum"><small>팝업</small>${won(c.p)}</span>
       <span class="flag">${flagFor(c)}</span>
@@ -432,10 +433,11 @@ function render(D){
       <div class="stat"><div class="k">누적 CM2율</div><div class="v tnum" style="color:var(--${cmTone(p.cm2_rate)})">${pct(p.cm2_rate)}</div></div></div></div>
       <div class="dsec"><h3>주별 실판매가 추이 <span>점을 누르거나 올리면 상세</span></h3>${priceChart(p)}</div>`;
     const mx=(mix[name]||[]).slice().sort((a,b)=>b.qty-a.qty),mt=mx.reduce((a,r)=>a+r.qty,0);
-    if(mt)h+=`<div class="dsec"><h3>채널별 판매 <span>${won(mt)}개</span></h3><div class="mix">${mx.map(r=>`<i style="width:${r.qty/mt*100}%;background:${CH_COLOR[r.channel]||'#B0B8C1'}"></i>`).join('')}</div>
+    const mq=p.market_qty||0;
+    if(mt)h+=`<div class="dsec"><h3>채널별 판매 <span>${won(mt)}개${mq?` · 외부 마켓 ${won(mq)}개 (${pct(mq/mt)}) — 품절 임박 판단에서 제외`:''}</span></h3><div class="mix">${mx.map(r=>`<i style="width:${r.qty/mt*100}%;background:${CH_COLOR[r.channel]||'#B0B8C1'}"></i>`).join('')}</div>
       <div class="mixlg">${mx.map(r=>`<span><i style="background:${CH_COLOR[r.channel]||'#B0B8C1'}"></i>${esc(r.channel)} ${won(r.qty)} (${pct(r.qty/mt)})</span>`).join('')}</div></div>`;
     h+=`<div class="dsec"><h3>컬러·사이즈별 재고 대비 소진율 <span>판매 ÷ (판매 + 실재고) · 컬러를 누르면 사이즈별</span></h3><div class="cs">
-      <div class="chead"><span>컬러</span><span>판매</span><span>최근 14일</span><span class="stl">재고 대비 소진율</span><span>창고</span><span>팝업</span><span>상태</span><span>실재고</span><span></span></div>`;
+      <div class="chead"><span>컬러</span><span>판매</span><span>최근 14일 평시</span><span class="stl">재고 대비 소진율</span><span>창고</span><span>팝업</span><span>상태</span><span>실재고</span><span></span></div>`;
     rows.forEach(r=>{const zs=[...new Set([...Object.keys(S[r.c]||{}),...Object.keys(I[r.c]||{})])].sort((a,b)=>sizeKey(a)-sizeKey(b));
       h+=`<div class="cgroup">${crow('color',r.c,r,true)}<div class="sizes">${zs.map(z=>crow('',z,cell(r.c,z),false)).join('')}</div></div>`;});
     h+=crow('total','합계',tot,false);

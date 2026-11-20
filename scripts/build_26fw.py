@@ -39,7 +39,9 @@ SRC = {
     'hub': '1cb2i1XsuMNeJwWRhqlRObpI9DcO_-iXO',
     'inventory': '1ykrQdlyTKAHmf3qgtfAwHLiLgNeFJ5WD3n0wmjxU4I0',
     'popup': '1ont7N0rLV5BvrMz0F9wGS_pB0LlVAvn-',
+    'price': '1elpoQQ3CW4aNpcZfFJbu8q3ShUGKhNoZT2p3dGw4MFA',   # [어반사이드_어패럴] Price table — 마켓 기간·가격
 }
+MARKET_KEYS = ('JSUN', '제이선', '네고무카', '무카', '4910', '고윈')
 INV_TAB = '일자 별 재고조회 (당시재고)'
 JPY_KRW = 9  # 오모테산도 엔화 판매 환산 (¥1=9원, 라인시트 기준)
 SEASON_START = dt.date(2026, 8, 1)  # 허브와 같은 기준 (7월 선런칭분은 허브에도 없음)
@@ -211,40 +213,78 @@ def num(v):
 
 # ───────────────────────── 허브 ─────────────────────────
 def read_hub(buf, today):
-    ws = openpyxl.load_workbook(buf, data_only=True, read_only=True)['00_요약']
-    grid = [list(r) for r in ws.iter_rows(min_row=1, max_row=120, values_only=True)]
-    col_a = [str(r[0]).strip() if r and r[0] is not None else '' for r in grid]
+    """허브는 스크립트가 수식만 쓰고 계산 결과를 저장하지 않을 때가 있어(00_요약이 빈칸),
+    수식이 참조하는 입력값에서 직접 합산한다.
+      02_제품마스터  제품명·히어로·발주수량·판매가(VAT포함)·원가(VAT제외)   ← 값
+      04_월별계산기  상세 계산표 23품목×7개월 행의 월·실제판매량(AE)·실제매출(AH) ← 값 (제품명 칸은 수식)
+      01_입력값      ⑤ 월별 목표매출                                           ← 값
+    """
+    wb = openpyxl.load_workbook(buf, data_only=True, read_only=True)
+    for t in ('02_제품마스터', '04_월별계산기_및_매출집계', '01_입력값'):
+        if t not in wb.sheetnames:
+            raise ValidationError(f'허브에 "{t}" 탭 없음')
 
-    def row(prefix, start=0):
-        for i in range(start, len(col_a)):
-            if col_a[i].startswith(prefix):
-                return i
-        raise ValidationError(f'허브 00_요약에서 "{prefix}" 행을 찾지 못함')
-
-    i_t = row('시즌 목표매출')
-    target, refreshed = num(grid[i_t][1]), str(grid[i_t][2] or '')
-    cum = num(grid[row('누적 실제매출')][1])
-    i_m = row('월', row('② 월별'))
-    hdr = [str(v).strip() if v else '' for v in grid[i_m]]
-    tgt_row, act_row = grid[i_m + 1], grid[i_m + 2]
-    monthly = []
-    for m in MONTHS:
-        j = hdr.index(m)
-        monthly.append({'month': m, 'target': num(tgt_row[j]), 'actual': num(act_row[j])})
-
-    i_p = row('제품명', row('③ 제품별'))
-    ph = [str(v).strip() if v else '' for v in grid[i_p]]
-    c = {k: ph.index(k) for k in ('제품명', '히어로', '발주수량')}
-    c_qty = next(j for j, h in enumerate(ph) if h.startswith('실제판매량'))
-    c_rev = next(j for j, h in enumerate(ph) if h.startswith('실제매출'))
-    hub_products = []
-    for r in grid[i_p + 1:]:
-        n = str(r[0] or '').strip()
-        if not n or n == '합계':
-            break
+    # 제품마스터 (행 순서 = 04 상세 계산표의 품목 순서)
+    master, hdr = [], None
+    for r in wb['02_제품마스터'].iter_rows(values_only=True):
+        cells = [str(v).strip() if v is not None else '' for v in r]
+        if hdr is None:
+            if '제품명' in cells and any(c.startswith('발주수량') for c in cells):
+                hdr = cells
+            continue
+        n = cells[hdr.index('제품명')] if len(cells) > hdr.index('제품명') else ''
+        if not n:
+            if master:
+                break
+            continue
         canon, _ = match(n)
-        hub_products.append({'name': canon or n, 'hero': 'Y' if str(r[c['히어로']] or '').strip().upper() == 'Y' else '',
-                             'moq': int(num(r[c['발주수량']])), 'hub_qty': int(num(r[c_qty])), 'hub_rev': num(r[c_rev])})
+        col = lambda pre: next(i for i, h in enumerate(hdr) if h.startswith(pre))
+        master.append({'name': canon or n, 'hero': 'Y' if cells[col('히어로')].upper() == 'Y' else '',
+                       'moq': int(num(r[col('발주수량')])), 'tag': num(r[col('판매가')]), 'cost': num(r[col('원가(VAT제외)')])})
+    if len(master) != 23:
+        raise ValidationError(f'허브 02_제품마스터 품목 {len(master)}개 (23개여야 함)')
+
+    # 04 상세 계산표: 품목마다 8월~2월 7행
+    rows = list(wb['04_월별계산기_및_매출집계'].iter_rows(values_only=True))
+    hi = next((i for i, r in enumerate(rows) if r and str(r[0] or '').strip() == '제품명'
+               and '월' in [str(v or '').strip() for v in r] and any(str(v or '').startswith('실제판매량') for v in r)), None)
+    if hi is None:
+        raise ValidationError('허브 04 상세 계산표 머리글을 찾지 못함')
+    h = [str(v or '').strip() for v in rows[hi]]
+    c_m = h.index('월')
+    c_q = next(i for i, x in enumerate(h) if x.startswith('실제판매량'))
+    c_r = next(i for i, x in enumerate(h) if x.startswith('실제매출'))
+    detail = [r for r in rows[hi + 1:hi + 1 + 23 * 7]]
+    if [str(r[c_m] or '').strip() if c_m < len(r) else '' for r in detail] != MONTHS * 23:
+        raise ValidationError('허브 04 상세 계산표가 23품목×7개월 순서가 아님')
+    act = collections.Counter()
+    for i, p in enumerate(master):
+        blk = detail[i * 7:(i + 1) * 7]
+        cell = lambda r, j: r[j] if j < len(r) else None
+        p['hub_qty'] = int(sum(num(cell(r, c_q)) for r in blk))
+        p['hub_rev'] = sum(num(cell(r, c_r)) for r in blk)
+        for r in blk:
+            act[str(r[c_m]).strip()] += num(cell(r, c_r))
+    hub_products = master
+
+    # 월 목표 (01_입력값 '목표매출(원)' 행, 머리글 '월')
+    tgt = {}
+    rr = list(wb['01_입력값'].iter_rows(values_only=True))
+    for i, r in enumerate(rr):
+        if r and str(r[0] or '').strip() == '목표매출(원)' and i > 0 and str(rr[i - 1][0] or '').strip() == '월':
+            mh = [str(v or '').strip() for v in rr[i - 1]]
+            tgt = {m: num(r[mh.index(m)]) for m in MONTHS if m in mh}
+            break
+    if len(tgt) != 7:
+        raise ValidationError('허브 01_입력값 월별 목표매출을 찾지 못함')
+    monthly = [{'month': m, 'target': tgt[m], 'actual': act[m]} for m in MONTHS]
+    target, cum = sum(tgt.values()), sum(act.values())
+
+    refreshed = ''
+    for r in wb['00_요약'].iter_rows(min_row=1, max_row=15, values_only=True) if '00_요약' in wb.sheetnames else []:
+        for v in r or ():
+            if v and '매출 최신화' in str(v):
+                refreshed = str(v)
 
     # 오늘 기준 목표 누적률 = 전월까지 목표 + 당월 목표 × 경과일/월일수
     acc = 0.0
@@ -259,7 +299,6 @@ def read_hub(buf, today):
 
     # 취소·반품 매출 (허브 00_취소매출현황: 자사몰·4910·29CM·일본 자사몰만 집계, 무신사·이지체인은 구조상 미집계)
     cancels = []
-    wb = ws.parent
     if '00_취소매출현황' in wb.sheetnames:
         cg = [list(r) for r in wb['00_취소매출현황'].iter_rows(min_row=1, max_row=40, values_only=True)]
         hi = next((i for i, r in enumerate(cg) if r and str(r[0] or '').strip() == '채널'), None)
@@ -272,22 +311,6 @@ def read_hub(buf, today):
                 for m in MONTHS:
                     if m in ch:
                         cancels.append({'channel': name, 'month': m, 'amount': num(r[ch.index(m)])})
-    # 정가·원가(세전): 04_월별계산기 상세 계산표 (제품명 | ... | KR판매가 | 원가(세전))
-    unit = {}
-    if '04_월별계산기_및_매출집계' in wb.sheetnames:
-        hdr = None
-        for r in wb['04_월별계산기_및_매출집계'].iter_rows(values_only=True):
-            cells = [str(v).strip() if v is not None else '' for v in r]
-            if cells and cells[0] == '제품명' and 'KR판매가' in cells and '원가(세전)' in cells:
-                hdr = cells
-                continue
-            if hdr and cells and cells[0]:
-                canon, _ = match(cells[0])
-                if canon and canon not in unit:
-                    unit[canon] = {'tag': num(r[hdr.index('KR판매가')]), 'cost': num(r[hdr.index('원가(세전)')])}
-    for h in hub_products:
-        h.update(unit.get(h['name'], {'tag': 0, 'cost': 0}))
-
     # 채널수수료·운송비: 01_입력값
     fees, ship = dict(FEE_DEFAULT), SHIP_KR
     if '01_입력값' in wb.sheetnames:
@@ -425,6 +448,35 @@ def read_popup(buf, colors):
             recs.append({'ch': f'팝업 {store}', 'day': day, 'qty': q, 'paid': sign * amt,
                          'key': (canon, norm_color(d.get('컬러'), colors[canon]), norm_size(d.get('사이즈')) or NO_SIZE)})
     return stock, by_store, sold_q, sold_rev, recs, stamp
+
+
+# ───────────────────────── 마켓(외부 제휴) 기간 ─────────────────────────
+def read_markets(buf):
+    """Price table [국내_온라인] 26FW 행 중 외부 마켓(제이선·네고무카·4910·고윈) 구간.
+    → (품목별 [(시작, 종료+1일, 마켓가)], 4910 마켓 구간 목록)"""
+    wb = openpyxl.load_workbook(buf, data_only=True, read_only=True)
+    ws = next((w for w in wb.worksheets if '국내' in w.title and 'PriceTable' in w.title), wb.worksheets[0])
+    by_item, w4910 = collections.defaultdict(set), set()
+    for r in ws.iter_rows(values_only=True):
+        if not (r and len(r) > 11 and r[1] and '26FW' in str(r[1]) and r[3]):
+            continue
+        name = str(r[7] or '').strip()
+        if not any(k in name for k in MARKET_KEYS):
+            continue
+        s, e = to_date(r[5]), to_date(r[6])
+        try:
+            price = int(float(r[11]))
+        except (TypeError, ValueError):
+            continue
+        if not (s and e):
+            continue
+        if '4910' in name:
+            w4910.add((s, e))
+            continue
+        canon, _ = match(r[3])
+        if canon:
+            by_item[canon].add((s, e + dt.timedelta(days=1), price))
+    return by_item, sorted(w4910)
 
 
 # ───────────────────────── 주문 원본 ─────────────────────────
@@ -645,17 +697,19 @@ def read_musinsa(drv, colors, one_size, add, used):
             add('무신사', day, sku_key, q, kind, paid=paid, fee=max(0.0, paid - settle) / 1.1)
 
 
-def read_orders(drv, sku, colors, one_size, popup_recs, fees):
+def read_orders(drv, sku, colors, one_size, popup_recs, fees, markets=(None, ())):
     """주문 원본(5개 채널 + 무신사) + 팝업 판매를 행 단위 기록으로 모은다."""
     recs = []           # 판매·교환: dict(ch, day, key, qty, paid, fee)
     events = collections.defaultdict(collections.Counter)   # 'exchange'|'return_open'|'return_done' → (품목,컬러,사이즈) → 수량
     used = []
 
-    def add(ch, day, key, q, kind, paid=0.0, fee=None):
+    mk_item, mk_4910 = markets[0] or {}, markets[1]
+
+    def add(ch, day, key, q, kind, paid=0.0, fee=None, mkt=False):
         if day < SEASON_START:
             return
         if kind in ('sale', 'exchange'):
-            recs.append({'ch': ch, 'day': day, 'key': key, 'qty': q, 'paid': paid,
+            recs.append({'ch': ch, 'day': day, 'key': key, 'qty': q, 'paid': paid, 'mkt': mkt,
                          'fee': fee if fee is not None else paid / 1.1 * fees.get(ch, 0.0)})
         if kind != 'sale':
             events[kind][key] += q
@@ -697,7 +751,14 @@ def read_orders(drv, sku, colors, one_size, popup_recs, fees):
                     continue
                 q = int(num(d.get(c['qty'])))
                 fee = fee_base[i] / 1.1 * fees.get(ch, 0.0) if fee_base else None
-                add(ch, day, parse_cs(ch, d, canon, pat, sku, colors), q, kind, paid=paids[i], fee=fee)
+                # 외부 마켓 판매(평시 속도에서 뺄 '거품'): 자사몰은 마켓 기간에 마켓가로 결제된 줄, 4910은 4910 마켓 기간 전부
+                mkt = False
+                if ch == '자사몰' and q:
+                    unit = num(d.get('상품구매금액')) / q
+                    mkt = any(s <= day <= e and abs(unit - pr) <= 1000 for s, e, pr in mk_item.get(canon, ()))
+                elif ch == '4910':
+                    mkt = any(s <= day <= e for s, e in mk_4910)
+                add(ch, day, parse_cs(ch, d, canon, pat, sku, colors), q, kind, paid=paids[i], fee=fee, mkt=mkt)
     read_musinsa(drv, colors, one_size, add, used)
     for r in popup_recs:
         add(r['ch'], r['day'], r['key'], r['qty'], 'sale', paid=r['paid'])
@@ -794,22 +855,25 @@ def main():
     kpi, monthly, hub_products, hub_refreshed, cancels, fees, ship_kr = read_hub(drv.get(metas['hub']), today)
     wh_size, pending, sku, colors, one_size, wh_col = read_inventory(drv.get(metas['inventory']))
     pop_stock, pop_store, pop_q, pop_rev, pop_recs, pop_stamp = read_popup(drv.get(metas['popup']), colors)
-    recs, events, used, sig = read_orders(drv, sku, colors, one_size, pop_recs, fees)
+    markets = read_markets(drv.get(metas['price']))
+    recs, events, used, sig = read_orders(drv, sku, colors, one_size, pop_recs, fees, markets)
 
     # ── 판매 기록에서 파생 ──
     online = [r for r in recs if not r['ch'].startswith('팝업')]
     D = max(r['day'] for r in online if r['day'] <= today)
     win3 = {D - dt.timedelta(days=i) for i in range(3)}
     win14 = {D - dt.timedelta(days=i) for i in range(14)}
-    cs, cs14, r3, r3ch = (collections.Counter() for _ in range(4))
+    cs, cs14, r3, r3ch, mkq = (collections.Counter() for _ in range(5))
     mix = collections.Counter()
     agg = collections.defaultdict(lambda: collections.Counter())   # 품목 → 금액·수량 합계
     weekly = collections.defaultdict(lambda: collections.Counter())  # (품목, 주 시작일) → paid, qty
     for r in recs:
         n, q = r['key'][0], r['qty']
         cs[r['key']] += q
-        if r['day'] in win14:
+        if r['day'] in win14 and not r['mkt']:   # 품절 임박 판단용: 마켓 거품 제외 평시 속도
             cs14[r['key']] += q
+        if r['mkt']:
+            mkq[n] += q
         if r['day'] in win3 and not r['ch'].startswith('팝업'):
             r3[n] += q
             r3ch[r['ch']] += q
@@ -844,7 +908,7 @@ def main():
         products.append({'name': n, 'hero': h['hero'], 'moq': h['moq'], 'sold_qty': q, 'sold_rev': round(h['hub_rev'] + pop_rev.get(n, 0), 1),
                          'sell_through': round(q / h['moq'], 4) if h['moq'] else 0,
                          'popup_sold_qty': pop_q.get(n, 0), 'popup_sold_rev': round(pop_rev.get(n, 0), 1),
-                         'order_qty': int(a['qty']), 'tag_price': h['tag'], 'avg_price': round(avg_price),
+                         'order_qty': int(a['qty']), 'market_qty': int(mkq[n]), 'tag_price': h['tag'], 'avg_price': round(avg_price),
                          'discount_rate': round(1 - avg_price / h['tag'], 4) if h['tag'] and avg_price else None,
                          'cm2': round(cm2), 'cm2_rate': round(cm2 / a['net'], 4) if a['net'] else None})
     price_kpi = {'discount_rate': round(1 - tot['dom_paid'] / tot['dom_tag'], 4) if tot['dom_tag'] else None,
