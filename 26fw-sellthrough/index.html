@@ -317,6 +317,8 @@ function render(D){
 
   // 헤더·경고
   $('updated').textContent=`${(meta.built_at_kst||'').slice(5).replace('-','/')} 업데이트`;
+  const builtAt=new Date((meta.built_at_kst||'').replace(' ','T')+':00+09:00'),ageH=(Date.now()-builtAt)/36e5;
+  if(ageH>26)(meta.stale??=[]).unshift(`자동 업데이트가 ${Math.floor(ageH)}시간째 멈춰 있어요`);
   if(meta.stale&&meta.stale.length){$('stale').textContent='⚠ 데이터가 늦어지고 있어요 · '+meta.stale.join(' · ');$('stale').classList.add('on');}
 
   // 히어로
