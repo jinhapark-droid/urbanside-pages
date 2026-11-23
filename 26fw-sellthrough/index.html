@@ -47,6 +47,11 @@ button{font:inherit;color:inherit}
 .chip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;background:var(--card);color:var(--t2);font-size:13px;font-weight:500;box-shadow:var(--shadow);white-space:nowrap}
 .chip .dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
 .headr{display:flex;gap:8px;flex-wrap:wrap}
+.ins{display:none}.ins.on{display:block}
+.ins .lab{font-size:13px;color:var(--t3);font-weight:600}
+.ins .hl{font-size:20px;font-weight:700;letter-spacing:-.02em;margin:4px 0 10px;line-height:1.4}
+.ins ul{margin:0;padding:0;list-style:none;display:grid;gap:6px}
+.ins li{font-size:14px;color:var(--t2);line-height:1.55}.ins li b{color:var(--t1);font-weight:600}
 .rbtn{border:0;cursor:pointer;font-family:inherit;color:var(--blue,#3182f6);font-weight:600}
 .rbtn:disabled{color:var(--t3);cursor:default}
 .rmsg{display:none;background:var(--card);border-radius:16px;padding:14px 18px;font-size:14px;line-height:1.6;color:var(--t2);box-shadow:var(--shadow)}
@@ -228,6 +233,7 @@ button{font:inherit;color:inherit}
     <div class="headr"><span class="chip"><span class="dot"></span><span id="updated">—</span></span><button class="chip rbtn" id="rbtn" onclick="manualRefresh()">↻ 지금 업데이트</button></div>
   </header>
   <div class="rmsg" id="rmsg"></div>
+  <section class="card ins" id="ins"></section>
   <div class="stale" id="stale"></div>
 
   <section class="card hero">
@@ -303,11 +309,15 @@ document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')
 // 이 페이지는 새 데이터가 올라올 때까지 30초마다 확인해 자동으로 새로고침한다.
 const RUN_URL='https://github.com/jinhapark-droid/urbanside-pages/actions/workflows/26fw-sellthrough.yml';
 let polling=null;
+// 팀원용 중계(Google Apps Script 웹 앱, scripts/apps_script_refresh.gs). 비어 있으면 GitHub 실행 화면으로 대체.
+const RELAY_URL='';
 function manualRefresh(){
-  window.open(RUN_URL,'_blank','noopener');
   const m=document.getElementById('rmsg'),b=document.getElementById('rbtn');
-  m.innerHTML='새 탭의 GitHub 화면에서 <b>Run workflow → 초록색 Run workflow</b>를 눌러 주세요. (저장소 권한 있는 계정만 가능)<br>'+
-    '1~2분 뒤 새 데이터가 올라오면 이 페이지가 알아서 새로고침돼요. <span id="rwait"></span> · <a href="'+RUN_URL+'" target="_blank" rel="noopener">GitHub 다시 열기</a>';
+  if(RELAY_URL){window.open(RELAY_URL,'_blank','noopener');
+    m.innerHTML='업데이트를 요청했어요. 1~2분 뒤 새 데이터가 올라오면 이 페이지가 알아서 새로고침돼요. <span id="rwait"></span>';
+  }else{window.open(RUN_URL,'_blank','noopener');
+    m.innerHTML='새 탭의 GitHub 화면에서 <b>Run workflow → 초록색 Run workflow</b>를 눌러 주세요. (저장소 권한 있는 계정만 가능)<br>'+
+    '1~2분 뒤 새 데이터가 올라오면 이 페이지가 알아서 새로고침돼요. <span id="rwait"></span> · <a href="'+RUN_URL+'" target="_blank" rel="noopener">GitHub 다시 열기</a>';}
   m.classList.add('on');b.disabled=true;b.textContent='확인 중…';
   if(polling)return;
   const ct0=DOC&&DOC.ct,t0=Date.now();
@@ -347,6 +357,11 @@ function render(D){
   $('updated').textContent=`${(meta.built_at_kst||'').slice(5).replace('-','/')} 업데이트`;
   const builtAt=new Date((meta.built_at_kst||'').replace(' ','T')+':00+09:00'),ageH=(Date.now()-builtAt)/36e5;
   if(ageH>26)(meta.stale??=[]).unshift(`자동 업데이트가 ${Math.floor(ageH)}시간째 멈춰 있어요`);
+  const IN=D.insights;
+  if(IN&&IN.headline){const md=s=>s.slice(5).replace('-','/');
+    $('ins').innerHTML=`<div class="lab">최근 3일 인사이트 · ${md(IN.start)}~${md(IN.end)} 결제 (팝업 제외)</div><div class="hl">${esc(IN.headline)}</div><ul>${
+      IN.lines.map(l=>{const i=l.indexOf(': ');return `<li>${i>0?`<b>${esc(l.slice(0,i))}</b> · ${esc(l.slice(i+2))}`:esc(l)}</li>`;}).join('')}</ul>`;
+    $('ins').classList.add('on');}
   if(meta.stale&&meta.stale.length){$('stale').textContent='⚠ 데이터가 늦어지고 있어요 · '+meta.stale.join(' · ');$('stale').classList.add('on');}
 
   // 히어로

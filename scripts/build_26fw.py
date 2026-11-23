@@ -837,6 +837,42 @@ def validate(new, prev, notes):
 
 
 # ───────────────────────── main ─────────────────────────
+def make_insights(D, win3, r3, p3, r3m, r3ch, inv, prod):
+    """최근 3일 판매(팝업 제외)를 직전 3일과 비교해 상단에 띄울 한 줄 요약 몇 개를 만든다."""
+    short = lambda n: n.replace('어반사이드 ', '')
+    chg = lambda a, b: f'{(a / b - 1) * 100:+.0f}%' if b else '신규'
+    tot, ptot, mtot = sum(r3.values()), sum(p3.values()), sum(r3m.values())
+    lines = []
+    trend = '직전 3일과 비슷' if ptot and abs(tot / ptot - 1) < .05 else f'직전 3일 대비 {chg(tot, ptot)}'
+    head = f'최근 3일 {tot:,}개 판매 · {trend}'
+    if mtot and mtot / tot >= .3:
+        head += f' (외부 마켓 {mtot:,}개, {mtot / tot:.0%} 포함)'
+    top = r3.most_common(3)
+    if top:
+        lines.append('많이 팔린 품목: ' + ', '.join(f'{short(n)} {q}개({chg(q, p3[n])})' for n, q in top))
+    ups = sorted(((q - p3[n], n) for n, q in r3.items() if q >= 10 and q >= 2 * max(p3[n], 1)), reverse=True)[:2]
+    if ups:
+        lines.append('급증: ' + ', '.join(f'{short(n)} {p3[n]}→{r3[n]}개' + (' (마켓 판매 위주)' if r3m[n] / r3[n] >= .5 else '')
+                                          for _, n in ups))
+    downs = sorted(((p3[n] - r3[n], n) for n in p3 if p3[n] >= 10 and r3[n] <= p3[n] / 2), reverse=True)[:2]
+    if downs:
+        lines.append('주춤: ' + ', '.join(f'{short(n)} {p3[n]}→{r3[n]}개' for _, n in downs))
+    risk = []
+    for n, q in r3.items():
+        organic = q - r3m[n]
+        real = (inv.get(n) or {}).get('real_qty', 0)
+        if organic >= 3 and real:
+            days = real / (organic / 3)
+            if days <= 45:
+                risk.append((days, n, real))
+    if risk:
+        lines.append('이 속도면 곧 품절: ' + ', '.join(f'{short(n)} 약 {d:.0f}일분(실재고 {real}개)' for d, n, real in sorted(risk)[:3]))
+    if r3ch:
+        ch, q = max(r3ch.items(), key=lambda x: x[1])
+        lines.append(f'채널: {ch} {q / tot:.0%}' + ''.join(f' · {c} {v / tot:.0%}' for c, v in sorted(r3ch.items(), key=lambda x: -x[1])[1:3]))
+    return {'start': min(win3).isoformat(), 'end': D.isoformat(), 'headline': head, 'lines': lines}
+
+
 def main():
     pw = os.environ.get('DASH_PASSWORD')
     if not pw:
@@ -863,7 +899,9 @@ def main():
     D = max(r['day'] for r in online if r['day'] <= today)
     win3 = {D - dt.timedelta(days=i) for i in range(3)}
     win14 = {D - dt.timedelta(days=i) for i in range(14)}
+    prev3 = {D - dt.timedelta(days=i) for i in range(3, 6)}
     cs, cs14, r3, r3ch, mkq = (collections.Counter() for _ in range(5))
+    p3, r3m = collections.Counter(), collections.Counter()   # 직전 3일 판매, 최근 3일 중 외부 마켓분
     mix = collections.Counter()
     agg = collections.defaultdict(lambda: collections.Counter())   # 품목 → 금액·수량 합계
     weekly = collections.defaultdict(lambda: collections.Counter())  # (품목, 주 시작일) → paid, qty
@@ -877,6 +915,10 @@ def main():
         if r['day'] in win3 and not r['ch'].startswith('팝업'):
             r3[n] += q
             r3ch[r['ch']] += q
+            if r['mkt']:
+                r3m[n] += q
+        if r['day'] in prev3 and not r['ch'].startswith('팝업'):
+            p3[n] += q
         mix[(n, '팝업' if r['ch'].startswith('팝업') else r['ch'])] += q
         a = agg[n]
         a['qty'] += q
@@ -936,6 +978,7 @@ def main():
                                                                    ('returning_qty', 'returning_qty'),
                                                                    ('real_qty', 'real_qty'))}})
 
+    insights = make_insights(D, win3, r3, p3, r3m, r3ch, {i['name']: i for i in inventory}, {p['name']: p for p in products})
     color_size = [{'product': k[0], 'color': k[1], 'size': k[2], 'qty': v, 'qty14': cs14.get(k, 0)} for k, v in sorted(cs.items()) if v]
     recent = [{'name': n, 'recent3d_qty': int(r3.get(n, 0))} for n in NAMES]
     price_weekly = [{'name': n, 'week': wk.isoformat(), 'qty': int(v['qty']), 'avg_price': round(v['paid'] / v['qty'])}
@@ -976,7 +1019,7 @@ def main():
     }
     new = {'season_kpi': kpi, 'monthly': monthly, 'products': products, 'inventory': inventory,
            'inventory_by_size': by_size, 'color_size': color_size, 'recent3d': recent, 'cancels': cancels,
-           'price_kpi': price_kpi, 'price_weekly': price_weekly, 'channel_mix': channel_mix, 'meta': meta}
+           'price_kpi': price_kpi, 'price_weekly': price_weekly, 'channel_mix': channel_mix, 'insights': insights, 'meta': meta}
 
     notes = []
     validate(new, prev, notes)
